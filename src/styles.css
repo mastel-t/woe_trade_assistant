@@ -330,6 +330,11 @@ select {
   white-space: nowrap;
 }
 
+select option {
+  background: #ffffff;
+  color: #000000;
+}
+
 .search-wrap > span {
   padding-left: 12px;
   color: var(--muted);
