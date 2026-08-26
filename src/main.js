@@ -147,7 +147,6 @@ async function loadData() {
     state.config = config;
     state.marketplace = marketplace;
     state.items = createItemIndex(config.items);
-    state.perkIds = new Set();
 
     elements.liveBadge.title = `Configuration ${config.version || "unversioned"} · prices as of ${dateFormatter.format(new Date(marketplace.server_now_unix_ms))}`;
     populatePerks();
@@ -197,6 +196,8 @@ function enabledReceiptIds() {
 }
 
 function populatePerks() {
+  const availablePerkIds = new Set(recipeUnlockPerks().map((perk) => Number(perk.id)));
+  state.perkIds = new Set([...state.perkIds].filter((perkId) => availablePerkIds.has(perkId)));
   elements.perkList.replaceChildren();
   for (const perk of recipeUnlockPerks()) {
     const label = document.createElement("label");
