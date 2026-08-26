@@ -265,6 +265,56 @@ main {
   gap: 10px;
 }
 
+.perk-controls {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.perk-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 9px;
+}
+
+.perk-hint {
+  color: #687276;
+  font-size: 10px;
+}
+
+.perk-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.perk-option {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--field);
+  color: var(--muted-strong);
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color 150ms ease, color 150ms ease, background 150ms ease;
+}
+
+.perk-option:has(input:checked) {
+  border-color: #746742;
+  background: rgba(215, 191, 120, 0.08);
+  color: var(--text);
+}
+
+.perk-option input {
+  accent-color: var(--accent);
+}
+
 .field {
   min-width: 0;
   display: grid;
