@@ -18,6 +18,7 @@ const state = {
   items: new Map(),
   catalog: new Map(),
   prices: new Map(),
+  perkIds: new Set(),
   selectedMarket: null,
   visibleItemIds: [],
   costMode: "direct",
@@ -28,7 +29,7 @@ const elements = Object.fromEntries(
     "calculator", "loadingPanel", "results", "errorPanel", "errorMessage",
     "errorRetryButton", "refreshButton", "liveBadge", "liveLabel", "citySelect",
     "itemSearch", "itemSelect", "recipeField", "recipeSelect",
-    "runsInput", "decreaseRuns", "increaseRuns", "selectedItemImage", "itemTierBadge",
+    "runsInput", "decreaseRuns", "increaseRuns", "perkList", "selectedItemImage", "itemTierBadge",
     "selectedItemName", "selectedRecipeName", "outputAmount", "expectedCost", "unitCost",
     "unitCostHint", "instantRevenue", "marketPurchaseCost", "profitMetric", "expectedProfit",
     "profitHint", "savingsMetric", "craftSavings", "savingsHint",
@@ -146,9 +147,10 @@ async function loadData() {
     state.config = config;
     state.marketplace = marketplace;
     state.items = createItemIndex(config.items);
-    state.catalog = extractCraftCatalog(config);
 
     elements.liveBadge.title = `Configuration ${config.version || "unversioned"} · prices as of ${dateFormatter.format(new Date(marketplace.server_now_unix_ms))}`;
+    populatePerks();
+    rebuildCatalog();
     populateCities();
     selectMarket(elements.citySelect.value);
     enableControls();
@@ -174,6 +176,53 @@ function enableControls() {
   for (const element of [elements.citySelect, elements.itemSearch, elements.itemSelect, elements.runsInput]) {
     element.disabled = false;
   }
+}
+
+function recipeUnlockPerks() {
+  return (state.config?.technology_tree?.nodes ?? []).filter((perk) => (
+    (perk.effects ?? []).some((effect) => Number.isFinite(Number(
+      effect.Target?.BuildingTarget?.receipt_id,
+    )) && effect.Effect?.CraftEnableReceipt !== undefined)
+  ));
+}
+
+function enabledReceiptIds() {
+  return recipeUnlockPerks()
+    .filter((perk) => state.perkIds.has(Number(perk.id)))
+    .flatMap((perk) => (perk.effects ?? [])
+      .filter((effect) => effect.Effect?.CraftEnableReceipt !== undefined)
+      .map((effect) => Number(effect.Target?.BuildingTarget?.receipt_id)))
+    .filter(Number.isFinite);
+}
+
+function populatePerks() {
+  const availablePerkIds = new Set(recipeUnlockPerks().map((perk) => Number(perk.id)));
+  state.perkIds = new Set([...state.perkIds].filter((perkId) => availablePerkIds.has(perkId)));
+  elements.perkList.replaceChildren();
+  for (const perk of recipeUnlockPerks()) {
+    const label = document.createElement("label");
+    label.className = "perk-option";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = String(perk.id);
+    checkbox.checked = state.perkIds.has(Number(perk.id));
+    checkbox.addEventListener("change", () => {
+      const perkId = Number(checkbox.value);
+      if (checkbox.checked) state.perkIds.add(perkId);
+      else state.perkIds.delete(perkId);
+      rebuildCatalog();
+    });
+    const name = document.createElement("span");
+    name.textContent = translate(perk.name);
+    label.append(checkbox, name);
+    elements.perkList.append(label);
+  }
+}
+
+function rebuildCatalog() {
+  const previousItemId = Number(elements.itemSelect.value);
+  state.catalog = extractCraftCatalog(state.config, { enabledReceiptIds: enabledReceiptIds() });
+  populateItems(elements.itemSearch.value, state.catalog.has(previousItemId) ? previousItemId : null);
 }
 
 function selectMarket(marketId) {

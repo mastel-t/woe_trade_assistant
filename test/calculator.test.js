@@ -53,6 +53,24 @@ test("extractCraftCatalog skips disabled recipes and deduplicates equal building
   assert.deepEqual(catalog.get(29)[0].sourceBuildingIds, [7, 601]);
 });
 
+test("extractCraftCatalog includes disabled recipes enabled by a perk", () => {
+  const catalog = extractCraftCatalog({
+    buildings_craft: [{
+      id: 606,
+      receipts: [{
+        id: 110,
+        disabled: true,
+        name: "toxic_mushroom",
+        consume: [{ item_id: 107, quantity: 6 }],
+        result: [{ type: "const", value: 129, count: 2 }],
+      }],
+    }],
+  }, { enabledReceiptIds: [110] });
+
+  assert.equal(catalog.get(129).length, 1);
+  assert.equal(catalog.get(129)[0].recipeId, 110);
+});
+
 test("calculateRecipe uses sell prices for ingredients and buy prices for output", () => {
   const recipe = {
     outputItemId: 29,

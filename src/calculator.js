@@ -55,12 +55,13 @@ export function createItemIndex(items = []) {
   );
 }
 
-export function extractCraftCatalog(config = {}) {
+export function extractCraftCatalog(config = {}, options = {}) {
   const groupedByOutput = new Map();
+  const enabledReceiptIds = new Set((options.enabledReceiptIds ?? []).map(Number));
 
   for (const building of config.buildings_craft ?? []) {
     for (const receipt of building.receipts ?? []) {
-      if (receipt.disabled) continue;
+      if (receipt.disabled && !enabledReceiptIds.has(Number(receipt.id))) continue;
 
       const ingredients = (receipt.consume ?? [])
         .map(normalizeIngredient)
