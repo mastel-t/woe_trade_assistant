@@ -119,6 +119,54 @@ test("calculateRecipe does not expose a misleading total when a price is missing
   assert.equal(result.costComplete, false);
 });
 
+test("calculateRecipe prefers assumed ingredient prices when provided", () => {
+  const recipe = {
+    outputItemId: 3,
+    ingredients: [
+      { itemId: 1, quantity: 2, returnChance: 0 },
+      { itemId: 2, quantity: 1, returnChance: 0 },
+    ],
+    outputs: [{ type: "const", itemId: 3, min: 1, max: 1, expected: 1 }],
+  };
+  const prices = new Map([
+    [1, { sell: 5, buy: 4 }],
+    [2, { sell: 8, buy: 7 }],
+    [3, { sell: 20, buy: 18 }],
+  ]);
+  const result = calculateRecipe(recipe, 1, prices, new Map([[1, 4], [2, 12]]));
+
+  assert.equal(result.expectedCost, 20);
+  assert.equal(result.ingredients[0].unitPrice, 4);
+  assert.equal(result.ingredients[1].unitPrice, 12);
+});
+
+test("calculateCraftChain uses assumed prices when expanding raw materials", () => {
+  const oreRecipe = {
+    outputItemId: 2,
+    selectedOutput: { type: "const", itemId: 2, min: 2, max: 2, expected: 2 },
+    ingredients: [{ itemId: 1, quantity: 3, returnChance: 0 }],
+    outputs: [{ type: "const", itemId: 2, min: 2, max: 2, expected: 2 }],
+  };
+  const ingotRecipe = {
+    outputItemId: 3,
+    selectedOutput: { type: "const", itemId: 3, min: 1, max: 1, expected: 1 },
+    ingredients: [{ itemId: 2, quantity: 4, returnChance: 0 }],
+    outputs: [{ type: "const", itemId: 3, min: 1, max: 1, expected: 1 }],
+  };
+  const prices = new Map([
+    [1, { sell: 5, buy: 4 }],
+    [2, { sell: 20, buy: 18 }],
+    [3, { sell: 100, buy: 90 }],
+  ]);
+  const catalog = new Map([[2, [oreRecipe]], [3, [ingotRecipe]]]);
+  const result = calculateCraftChain(ingotRecipe, 2, prices, catalog, { maxDepth: 12 }, new Map([[1, 2]]));
+
+  assert.equal(result.expectedCost, 24);
+  assert.equal(result.rawMaterials[0].quantity, 12);
+  assert.equal(result.rawMaterials[0].unitPrice, 2);
+  assert.equal(result.root.children[0].cost, 24);
+});
+
 test("calculateCraftChain recursively replaces craftable ingredients with raw materials", () => {
   const oreRecipe = {
     outputItemId: 2,

@@ -21,6 +21,7 @@ const state = {
   perkIds: new Set(),
   selectedMarket: null,
   visibleItemIds: [],
+  assumedPrices: new Map(),
   costMode: "direct",
 };
 
@@ -411,7 +412,32 @@ function makeIngredientRow(ingredient) {
   const quantityCell = document.createElement("td");
   quantityCell.textContent = formatQuantity(ingredient.quantity);
   const priceCell = document.createElement("td");
-  priceCell.textContent = formatMoney(ingredient.unitPrice);
+  const displayPrice = ingredient.marketUnitPrice ?? ingredient.unitPrice ?? null;
+  priceCell.textContent = formatMoney(displayPrice);
+
+  const assumedPriceCell = document.createElement("td");
+  const assumedInput = document.createElement("input");
+  assumedInput.type = "number";
+  assumedInput.min = "0";
+  assumedInput.step = "0.01";
+  assumedInput.placeholder = "—";
+  assumedInput.className = "assumed-price-input";
+  const overrideValue = state.assumedPrices.get(ingredient.itemId);
+  assumedInput.value = Number.isFinite(overrideValue) ? String(overrideValue) : "";
+  assumedInput.addEventListener("change", () => {
+    const value = assumedInput.value.trim();
+    if (!value) {
+      state.assumedPrices.delete(ingredient.itemId);
+      renderCalculation();
+      return;
+    }
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric < 0) return;
+    state.assumedPrices.set(ingredient.itemId, numeric);
+    renderCalculation();
+  });
+  assumedPriceCell.append(assumedInput);
+
   const returnCell = document.createElement("td");
   returnCell.textContent = ingredient.returnChance ? `${formatQuantity(ingredient.returnChance)}%` : "—";
   const costCell = document.createElement("td");
@@ -419,7 +445,7 @@ function makeIngredientRow(ingredient) {
   costCell.textContent = formatMoney(ingredient.expectedCost);
 
   if (ingredient.unitPrice === null) row.classList.add("has-missing-price");
-  row.append(itemCell, quantityCell, priceCell, returnCell, costCell);
+  row.append(itemCell, quantityCell, priceCell, assumedPriceCell, returnCell, costCell);
   return row;
 }
 
@@ -429,6 +455,7 @@ function renderIngredients(calculation) {
         itemId: material.itemId,
         quantity: material.quantity,
         returnChance: 0,
+        marketUnitPrice: material.marketUnitPrice ?? material.unitPrice,
         unitPrice: material.unitPrice,
         expectedCost: material.cost,
       }))
@@ -529,8 +556,8 @@ function renderCalculation() {
   const recipe = selectedRecipe();
   if (!recipe || !state.selectedMarket) return;
   const calculation = state.costMode === "chain"
-    ? calculateCraftChain(recipe, elements.runsInput.value, state.prices, state.catalog)
-    : calculateRecipe(recipe, elements.runsInput.value, state.prices);
+    ? calculateCraftChain(recipe, elements.runsInput.value, state.prices, state.catalog, {}, state.assumedPrices)
+    : calculateRecipe(recipe, elements.runsInput.value, state.prices, state.assumedPrices);
   elements.runsInput.value = String(calculation.runs);
   renderItemHeader(recipe, calculation);
   renderMetrics(calculation);
@@ -557,7 +584,10 @@ function changeRuns(delta) {
 
 elements.citySelect.addEventListener("change", () => selectMarket(elements.citySelect.value));
 elements.itemSearch.addEventListener("input", () => populateItems(elements.itemSearch.value, Number(elements.itemSelect.value)));
-elements.itemSelect.addEventListener("change", populateRecipes);
+elements.itemSelect.addEventListener("change", () => {
+  state.assumedPrices.clear();
+  populateRecipes();
+});
 elements.recipeSelect.addEventListener("change", renderCalculation);
 elements.runsInput.addEventListener("input", renderCalculation);
 elements.runsInput.addEventListener("blur", renderCalculation);

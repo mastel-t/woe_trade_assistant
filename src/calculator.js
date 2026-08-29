@@ -116,7 +116,16 @@ export function createPriceIndex(market) {
   );
 }
 
-export function calculateRecipe(recipe, runs, prices) {
+export function getEffectiveSellPrice(itemId, prices, assumedPrices = new Map()) {
+  const itemKey = Number(itemId);
+  const assumed = assumedPrices.get(itemKey);
+  if (assumed !== undefined && assumed !== null && Number.isFinite(Number(assumed))) {
+    return Number(assumed);
+  }
+  return prices.get(itemKey)?.sell ?? null;
+}
+
+export function calculateRecipe(recipe, runs, prices, assumedPrices = new Map()) {
   const safeRuns = clamp(Math.trunc(asFiniteNumber(runs, 1)), 1, 1_000_000);
   let expectedCost = 0;
   let purchaseCost = 0;
@@ -128,7 +137,8 @@ export function calculateRecipe(recipe, runs, prices) {
   const ingredients = recipe.ingredients.map((ingredient) => {
     const quantity = ingredient.quantity * safeRuns;
     const expectedConsumed = quantity * (1 - ingredient.returnChance / 100);
-    const unitPrice = prices.get(ingredient.itemId)?.sell ?? null;
+    const marketUnitPrice = prices.get(ingredient.itemId)?.sell ?? null;
+    const unitPrice = getEffectiveSellPrice(ingredient.itemId, prices, assumedPrices);
     const linePurchaseCost = unitPrice === null ? null : quantity * unitPrice;
     const lineExpectedCost = unitPrice === null ? null : expectedConsumed * unitPrice;
 
@@ -141,6 +151,7 @@ export function calculateRecipe(recipe, runs, prices) {
       ...ingredient,
       quantity,
       expectedConsumed,
+      marketUnitPrice,
       unitPrice,
       purchaseCost: linePurchaseCost,
       expectedCost: lineExpectedCost,
@@ -195,17 +206,19 @@ export function calculateRecipe(recipe, runs, prices) {
   };
 }
 
-export function calculateCraftChain(recipe, runs, prices, catalog, options = {}) {
+export function calculateCraftChain(recipe, runs, prices, catalog, options = {}, assumedPrices = new Map()) {
   const maxDepth = Math.max(1, Math.trunc(asFiniteNumber(options.maxDepth, 12)));
-  const direct = calculateRecipe(recipe, runs, prices);
+  const direct = calculateRecipe(recipe, runs, prices, assumedPrices);
 
   function marketNode(itemId, quantity, reason = "raw") {
-    const unitPrice = prices.get(itemId)?.sell ?? null;
+    const marketUnitPrice = prices.get(itemId)?.sell ?? null;
+    const unitPrice = getEffectiveSellPrice(itemId, prices, assumedPrices);
     const cost = unitPrice === null ? null : quantity * unitPrice;
     return {
       kind: "market",
       itemId,
       quantity,
+      marketUnitPrice,
       unitPrice,
       cost,
       coveredCost: cost ?? 0,
@@ -292,6 +305,7 @@ export function calculateCraftChain(recipe, runs, prices, catalog, options = {})
     const current = rawByItem.get(node.itemId) ?? {
       itemId: node.itemId,
       quantity: 0,
+      marketUnitPrice: node.marketUnitPrice,
       unitPrice: node.unitPrice,
       cost: node.unitPrice === null ? null : 0,
       missing: node.unitPrice === null,
@@ -299,6 +313,8 @@ export function calculateCraftChain(recipe, runs, prices, catalog, options = {})
     current.quantity += node.quantity;
     if (current.cost !== null && node.cost !== null) current.cost += node.cost;
     else current.cost = null;
+    current.marketUnitPrice = current.marketUnitPrice ?? node.marketUnitPrice;
+    current.unitPrice = current.unitPrice ?? node.unitPrice;
     current.missing ||= node.unitPrice === null;
     rawByItem.set(node.itemId, current);
   }

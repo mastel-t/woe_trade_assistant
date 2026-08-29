@@ -724,6 +724,22 @@ tbody tr:last-child td {
   font-weight: 600;
 }
 
+.assumed-price-input {
+  width: 88px;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--field);
+  color: var(--text);
+  font: inherit;
+  text-align: right;
+}
+
+.assumed-price-input:focus {
+  outline: 2px solid rgba(177, 206, 255, 0.8);
+  outline-offset: 1px;
+}
+
 .has-missing-price td,
 .has-missing-price .line-cost {
   color: #bd8580;
