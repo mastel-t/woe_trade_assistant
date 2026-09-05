@@ -607,7 +607,7 @@ function renderMetrics(calculation) {
     : "based on average output";
 
   if (state.calculatorMode === "harvest") {
-    elements.costFootnote.textContent = "NET RESULT = expected sale value minus material cost. Selectable results split their base chance evenly across checked results; bundle children carry the sale value.";
+    elements.costFootnote.textContent = "NET RESULT = expected sale value minus material cost. Selectable results split their base chance evenly across checked results. Selected equipment multiplies result chances, capped at 100%; bundle children carry the sale value.";
   } else if (state.costMode === "chain") {
     elements.costFootnote.textContent = "The chain automatically expands craftable ingredients into raw materials and selects the cheapest complete recipe. Quantities use average output and expected consumption after returns.";
   } else {

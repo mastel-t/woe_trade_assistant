@@ -545,7 +545,7 @@ select option {
 
 .results {
   display: grid;
-  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.25fr);
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.9fr);
   gap: 12px;
   margin-top: 12px;
 }
@@ -564,14 +564,6 @@ select option {
 
 .summary-card {
   padding: 20px;
-}
-
-.results:has(.harvest-results-card:not([hidden])) {
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.9fr);
-}
-
-.results:has(.harvest-results-card:not([hidden])) .ingredients-card {
-  grid-column: 2;
 }
 
 .item-summary {
@@ -1117,10 +1109,6 @@ tbody tr:last-child td {
 
   .results {
     grid-template-columns: 1fr;
-  }
-
-  .results:has(.harvest-results-card:not([hidden])) .ingredients-card {
-    grid-column: auto;
   }
 }
 

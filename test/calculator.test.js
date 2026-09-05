@@ -38,6 +38,65 @@ test("extractHarvestCatalog excludes disabled receipts and candidates", () => {
   assert.equal(catalog.length, 1);
   assert.equal(catalog[0].slots[0].candidates.length, 1);
   assert.equal(catalog[0].slots[0].candidates[0].breakChance, 100);
+  assert.equal(catalog[0].slots[0].candidates[0].lootmoreCoef, 1);
+});
+
+test("calculateHarvest applies sample receipt 42 Mecha Cart bonus with a 100% cap", () => {
+  const receipt = extractHarvestCatalog(sampleConfig).find((entry) => entry.receiptId === 42);
+  const selectedCandidates = receipt.slots.map((slot) => {
+    const cartIndex = slot.candidates.findIndex((candidate) => candidate.itemId === 106);
+    return cartIndex >= 0 ? cartIndex : 0;
+  });
+  const cart = receipt.slots.flatMap((slot) => slot.candidates).find((candidate) => candidate.itemId === 106);
+  assert.equal(cart.lootmoreCoef, 1.75);
+  const prices = new Map([[176, { buy: 10 }], [178, { buy: 100 }], [35, { buy: 20 }]]);
+  const ordinary = calculateHarvest(receipt, 2, prices);
+  const result = calculateHarvest(receipt, 2, prices, selectedCandidates);
+
+  assert.deepEqual(ordinary.outputs.map((output) => output.chance), [65, 0.25, 65]);
+  assert.deepEqual(result.outputs.map((output) => output.baseChance), [65, 0.25, 65]);
+  assert.deepEqual(result.outputs.map((output) => output.chance), [100, 0.4375, 100]);
+  assert.deepEqual(result.outputs.map((output) => output.expected), [6, 0.00875, 6]);
+  assert.equal(result.expectedRevenue, 180.875);
+});
+
+test("calculateHarvest combines selected slot bonuses after selectable sharing and propagates bundle revenue", () => {
+  const [receipt] = extractHarvestCatalog({ harvests: [{
+    receipt_id: 90,
+    items_slots: [
+      { name: "worker", available_items: [{ item_id: 10, lootmore_coef: 1.5 }] },
+      { name: "transporter", available_items: [
+        { item_id: 11 }, { item_id: 12, lootmore_coef: 2 },
+      ] },
+      { name: "tool", available_items: [{ item_id: 13 }] },
+      { name: "empty", available_items: [] },
+    ],
+    result: [
+      { item_id: 143, count: 2, chance_percent: 60, selectable: true },
+      { item_id: 21, count: 1, chance_percent: 80, selectable: true },
+      { item_id: 22, count: 1, chance_percent: 50, selectable: true },
+      { item_id: 23, count: 1, chance_percent: 0 },
+    ],
+  }] });
+  const prices = new Map([[107, { buy: 10 }], [21, { buy: 5 }]]);
+  const itemIndex = new Map([[143, { bundle: "107x3" }]]);
+  const result = calculateHarvest(receipt, 2, prices, [0, 1], new Set(["90:0", "90:1"]), new Map(), itemIndex);
+
+  assert.deepEqual(result.outputs.map((output) => output.chance), [90, 100, 0, 0]);
+  assert.equal(result.outputs[0].baseChance, 60);
+  assert.equal(result.outputs[0].expected, 3.6);
+  assert.equal(result.outputs[0].children[0].chance, 90);
+  assert.ok(Math.abs(result.outputs[0].children[0].expected - 10.8) < 1e-12);
+  assert.equal(result.outputs[1].expected, 2);
+  assert.equal(result.outputs[2].expected, 0);
+  assert.equal(result.outputs[3].expected, 0);
+  assert.ok(Math.abs(result.expectedRevenue - 118) < 1e-12);
+
+  const fallback = calculateHarvest(receipt, 1, prices, [99, 99], new Set(["90:0", "90:1"]), new Map(), itemIndex);
+  assert.deepEqual(fallback.outputs.map((output) => output.chance), [45, 60, 0, 0]);
+  const unchecked = calculateHarvest(receipt, 1, prices, [0, 1], new Set(), new Map(), itemIndex);
+  assert.deepEqual(unchecked.outputs.map((output) => output.chance), [0, 0, 0, 0]);
+  assert.equal(unchecked.expectedRevenue, 0);
 });
 
 test("extractHarvestCatalog keeps valid zero-chance results", () => {
@@ -220,7 +279,9 @@ test("Harvest chain expands sample Stone Axe materials and totals selected expec
     recipeName: "Harvest materials",
   }, 1, prices, craftCatalog);
 
-  assert.equal(harvest.expectedRevenue, 30.75);
+  assert.equal(harvest.outputs[0].baseChance, 225);
+  assert.equal(harvest.outputs[0].chance, 100);
+  assert.equal(harvest.expectedRevenue, 18.25);
   assert.equal(harvest.outputs[1].selected, true);
   assert.equal(chain.root.children.find((child) => child.itemId === 17)?.recipe.outputItemId, 17);
 });

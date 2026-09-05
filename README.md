@@ -42,7 +42,11 @@ present, while candidate requirements are consumed at 100%. The materials
 section uses the same `Market / Chain` view as crafting: Market shows the
 aggregated material cost, and Chain recursively expands craftable candidates
 and requirements using the existing craft recipe catalog. Disabled receipts
-and candidates are omitted. Expected results use `chance_percent / 100 * count * runs`, with
+and candidates are omitted. Result chances are multiplied by the `lootmore_coef`
+of each selected slot candidate (default 1). Selectable results divide their base
+chance by the number of checked results before applying these multipliers. The
+final chance is capped at 100%; unchecked selectable results have zero chance.
+Expected results use `effective chance / 100 * count * runs`, with
 material costs from `best_sell_price` and harvest revenue from
 `best_buy_price`. Assumed prices can be entered per item ID for both material
 costs and harvest result revenue; they override the corresponding marketplace
