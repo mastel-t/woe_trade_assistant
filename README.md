@@ -37,8 +37,12 @@ uses its marketplace price as a fallback.
 
 Harvest calculations use `runs` directly; `duration_sec` and `max_parallel` are
 not used. Every enabled item-slot candidate can be selected. The candidate
-itself is a material: its `count` is multiplied by `break_percent / 100` when
-present, while candidate requirements are consumed at 100%. The materials
+itself is a material: its quantity is `count * runs`, its return chance is
+`100 - break_percent`, and its expected consumption is quantity multiplied by
+`break_percent / 100` (default 0% break chance, or 100% return). Candidate requirements are
+consumed at 100%. Repeated materials combine their quantities and expected
+consumption, with a quantity-weighted return chance. Harvest material costs
+use expected consumption, including the purchase cost estimate. The materials
 section uses the same `Market / Chain` view as crafting: Market shows the
 aggregated material cost, and Chain recursively expands craftable candidates
 and requirements using the existing craft recipe catalog. Disabled receipts

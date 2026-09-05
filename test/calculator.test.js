@@ -37,7 +37,7 @@ test("extractHarvestCatalog excludes disabled receipts and candidates", () => {
 
   assert.equal(catalog.length, 1);
   assert.equal(catalog[0].slots[0].candidates.length, 1);
-  assert.equal(catalog[0].slots[0].candidates[0].breakChance, 100);
+  assert.equal(catalog[0].slots[0].candidates[0].breakChance, 0);
   assert.equal(catalog[0].slots[0].candidates[0].lootmoreCoef, 1);
 });
 
@@ -140,7 +140,9 @@ test("calculateHarvest prices candidate consumption, requirements, and selected 
   ]);
   const result = calculateHarvest(receipt, 2, prices, [], new Set([20]));
 
-  assert.equal(result.ingredients.find((item) => item.itemId === 10).quantity, 1);
+  assert.equal(result.ingredients.find((item) => item.itemId === 10).quantity, 4);
+  assert.equal(result.ingredients.find((item) => item.itemId === 10).returnChance, 75);
+  assert.equal(result.ingredients.find((item) => item.itemId === 10).expectedConsumed, 1);
   assert.equal(result.ingredients.find((item) => item.itemId === 11).quantity, 6);
   assert.equal(result.expectedCost, 32);
   assert.equal(result.outputs.find((item) => item.itemId === 20).expected, 2);
@@ -149,6 +151,94 @@ test("calculateHarvest prices candidate consumption, requirements, and selected 
   assert.equal(result.outputs.find((item) => item.itemId === 21).expected, 2);
   assert.equal(result.expectedRevenue, 70);
   assert.equal(result.profit, 38);
+});
+
+test("calculateHarvest keeps sample receipt 3 teachers when break chance is absent and consumes students and requirements", () => {
+  const receipt = extractHarvestCatalog(sampleConfig).find((entry) => entry.receiptId === 3);
+  const prices = new Map([[1, { sell: 2 }], [22, { sell: 5 }]]);
+  for (const teacherId of [9, 42]) {
+    const selectedCandidates = receipt.slots.map((slot) => Math.max(0,
+      slot.candidates.findIndex((candidate) => candidate.itemId === teacherId)));
+    const result = calculateHarvest(receipt, 2, prices, selectedCandidates);
+    const teacher = result.ingredients.find((item) => item.itemId === teacherId);
+    assert.equal(teacher.quantity, 2);
+    assert.equal(teacher.returnChance, 100);
+    assert.equal(teacher.expectedConsumed, 0);
+    assert.equal(teacher.expectedCost, 0);
+    assert.equal(teacher.purchaseCost, 0);
+    const student = result.ingredients.find((item) => item.itemId === 22);
+    assert.equal(student.quantity, 2);
+    assert.equal(student.returnChance, 0);
+    assert.equal(student.expectedConsumed, 2);
+    const requirement = result.ingredients.find((item) => item.itemId === 1);
+    assert.equal(requirement.quantity, 2);
+    assert.equal(requirement.returnChance, 0);
+    assert.equal(requirement.expectedConsumed, 2);
+    assert.equal(result.costComplete, true);
+    assert.equal(result.expectedCost, 14);
+    assert.equal(result.purchaseCost, 14);
+  }
+});
+
+test("calculateHarvest exposes sample receipt 28 gross quantities and return chances", () => {
+  const receipt = extractHarvestCatalog(sampleConfig).find((entry) => entry.receiptId === 28);
+  const prices = new Map([[14, { sell: 100 }], [86, { sell: 50 }],
+    [1, { sell: 2 }], [2, { sell: 3 }], [166, { sell: 4 }]]);
+  for (const runs of [1, 3]) {
+    const result = calculateHarvest(receipt, runs, prices);
+    for (const itemId of [14, 86]) {
+      const ingredient = result.ingredients.find((item) => item.itemId === itemId);
+      assert.equal(ingredient.quantity, runs);
+      assert.equal(ingredient.returnChance, 96);
+      assert.equal(ingredient.expectedConsumed, 0.04 * runs);
+    }
+    const requirement = result.ingredients.find((item) => item.itemId === 1);
+    assert.equal(requirement.quantity, 4 * runs);
+    assert.equal(requirement.returnChance, 0);
+    assert.equal(requirement.expectedConsumed, 4 * runs);
+    assert.equal(result.expectedCost, 30 * runs);
+    assert.equal(result.purchaseCost, 30 * runs);
+
+    const output = { type: "const", itemId: 110, min: 1, max: 1, expected: 1 };
+    const chain = calculateCraftChain({
+      outputItemId: 110, selectedOutput: output, outputs: [output],
+      ingredients: result.ingredients,
+    }, 1, prices, new Map());
+    assert.ok(Math.abs(chain.expectedCost - result.expectedCost) < 1e-10);
+    assert.ok(Math.abs(chain.rawMaterials.find((item) => item.itemId === 14).quantity - 0.04 * runs) < 1e-12);
+  }
+});
+
+test("calculateHarvest combines material quantities with weighted returns and keeps unbreakable equipment", () => {
+  const [receipt] = extractHarvestCatalog({ harvests: [{
+    receipt_id: 91,
+    items_slots: [
+      { available_items: [{ item_id: 10, count: 2, break_percent: 25,
+        requirements: [{ item_id: 10, count: 1 }] }] },
+      { available_items: [{ item_id: 10, count: 1, break_percent: 50 }] },
+      { available_items: [{ item_id: 11, count: 1, break_percent: 0 }] },
+    ],
+    result: [{ item_id: 20, count: 1, chance_percent: 100 }],
+  }] });
+  const result = calculateHarvest(receipt, 3, new Map([[10, { sell: 8 }], [20, { buy: 20 }]]));
+  assert.equal(result.ingredients.length, 2);
+  const combined = result.ingredients.find((item) => item.itemId === 10);
+  assert.equal(combined.quantity, 12);
+  assert.equal(combined.expectedConsumed, 6);
+  assert.equal(combined.returnChance, 50);
+  assert.equal(combined.expectedCost, 48);
+  const unbreakable = result.ingredients.find((item) => item.itemId === 11);
+  assert.equal(unbreakable.quantity, 3);
+  assert.equal(unbreakable.returnChance, 100);
+  assert.equal(unbreakable.expectedConsumed, 0);
+  assert.equal(unbreakable.unitPrice, null);
+  assert.equal(unbreakable.expectedCost, 0);
+  assert.equal(unbreakable.purchaseCost, 0);
+  assert.equal(result.costComplete, true);
+  assert.equal(result.purchaseComplete, true);
+  assert.equal(result.expectedCost, 48);
+  assert.equal(result.purchaseCost, 48);
+  assert.equal(result.profit, 12);
 });
 
 test("calculateHarvest excludes selectable results from expected sale while retaining rows", () => {
@@ -389,7 +479,7 @@ test("describeHarvestReceipt explains every candidate, requirements, results, an
   assert.match(description, /approximation/);
 });
 
-test("calculateHarvest defaults break chance and evaluates every slot", () => {
+test("calculateHarvest evaluates every slot with explicit 100% break chance", () => {
   const receipt = {
     receiptId: 9,
     slots: [
