@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "sample:update": "node scripts/update-samples.js",
     "test": "node --test"
   },
   "devDependencies": {
