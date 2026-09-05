@@ -58,7 +58,7 @@ input:disabled {
 }
 
 .page-shell {
-  width: min(1180px, calc(100% - 40px));
+  width: min(1760px, calc(100% - 40px));
   margin: 0 auto;
 }
 
@@ -259,6 +259,91 @@ main {
   box-shadow: 0 0 0 1px var(--border);
 }
 
+.mode-switch label {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mode-switch label:has(input:checked) {
+  color: var(--text);
+}
+
+.mode-switch input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.harvest-options {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.harvest-options > .field-label {
+  align-self: center;
+  margin-right: 2px;
+}
+
+.harvest-option,
+.harvest-check {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--field);
+  color: var(--muted-strong);
+  font-size: 10px;
+}
+
+.harvest-option {
+  gap: 8px;
+}
+
+.harvest-option > span {
+  color: var(--muted);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.harvest-option select {
+  width: 150px;
+  height: 28px;
+  padding-left: 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-raised);
+  font-size: 10px;
+}
+
+.harvest-check input {
+  accent-color: var(--accent);
+}
+
+.harvest-empty {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 9px;
+  border: 1px dashed var(--border);
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .controls-grid {
   display: grid;
   grid-template-columns: 0.9fr 1.35fr 1.8fr 1.2fr 0.9fr;
@@ -350,6 +435,13 @@ main {
 .search-wrap:focus-within,
 .quantity-control:focus-within {
   border-color: #586267;
+}
+
+.harvest-receipt-summary {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .select-wrap::after {
@@ -453,18 +545,33 @@ select option {
 
 .results {
   display: grid;
-  grid-template-columns: minmax(0, 0.88fr) minmax(560px, 1.12fr);
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.25fr);
   gap: 12px;
   margin-top: 12px;
 }
 
+.result-column,
 .summary-card,
 .ingredients-card {
   min-width: 0;
 }
 
+.result-column {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
 .summary-card {
   padding: 20px;
+}
+
+.results:has(.harvest-results-card:not([hidden])) {
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.9fr);
+}
+
+.results:has(.harvest-results-card:not([hidden])) .ingredients-card {
+  grid-column: 2;
 }
 
 .item-summary {
@@ -548,6 +655,65 @@ select option {
   font-size: 10px;
 }
 
+.harvest-output-list {
+  display: grid;
+  gap: 4px;
+  grid-column: 1 / -1;
+  margin-top: 0;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--muted-strong);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.harvest-results-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.harvest-results-table {
+  min-width: 800px;
+  table-layout: fixed;
+}
+
+.harvest-results-table th,
+.harvest-results-table td {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+
+.harvest-results-table th span {
+  font-size: 8px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.harvest-results-table .bundle-parent-row td {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.harvest-results-table .bundle-child-row td:first-child {
+  padding-left: 32px;
+  color: var(--muted-strong);
+}
+
+.harvest-assumed-price-input {
+  width: 82px;
+}
+
+.harvest-description {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
 .metrics-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -623,6 +789,37 @@ select option {
 
 .card-heading h2 {
   font-size: 18px;
+}
+
+.card-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.harvest-material-switch {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--field);
+}
+
+.harvest-material-switch button {
+  height: 25px;
+  border: 0;
+  border-radius: 5px;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.harvest-material-switch button.is-active {
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: 0 0 0 1px var(--border);
 }
 
 .purchase-total {
@@ -920,6 +1117,10 @@ tbody tr:last-child td {
 
   .results {
     grid-template-columns: 1fr;
+  }
+
+  .results:has(.harvest-results-card:not([hidden])) .ingredients-card {
+    grid-column: auto;
   }
 }
 
