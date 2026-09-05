@@ -137,6 +137,7 @@ function normalizeHarvestCandidate(candidate) {
     itemId: asFiniteNumber(candidate?.item_id),
     count: Math.max(0, asFiniteNumber(candidate?.count, 1)),
     breakChance,
+    lootmoreCoef: Math.max(0, asFiniteNumber(candidate?.lootmore_coef ?? 1, 1)),
     requirements: (candidate?.requirements ?? [])
       .map((requirement) => ({
         itemId: asFiniteNumber(requirement?.item_id),
@@ -224,10 +225,12 @@ export function calculateHarvest(
     else ingredients.push({ itemId, quantity, returnChance: 0 });
   };
 
+  let lootmoreCoef = 1;
   receipt.slots.forEach((slot, slotIndex) => {
     const candidateIndex = Number(selectedCandidates[slotIndex]);
     const candidate = slot.candidates[candidateIndex] ?? slot.candidates[0];
     if (!candidate) return;
+    lootmoreCoef *= candidate.lootmoreCoef ?? 1;
     addIngredient(candidate.itemId, candidate.count * (candidate.breakChance / 100) * safeRuns);
     candidate.requirements.forEach((requirement) => {
       addIngredient(requirement.itemId, requirement.quantity * safeRuns);
@@ -264,9 +267,10 @@ export function calculateHarvest(
     const key = result.key ?? `${receipt.key ?? receipt.receiptId}:${resultIndex}`;
     const selected = !result.selectable || selectedResultIds.has(key)
       || (selectableResultCount === 1 && selectedResultIds.has(result.itemId));
-    const effectiveChance = result.selectable
+    const sharedChance = result.selectable
       ? checkedSelectableCount > 0 && selected ? result.chance / checkedSelectableCount : 0
       : result.chance;
+    const effectiveChance = clamp(sharedChance * lootmoreCoef, 0, 100);
     const expected = selected ? effectiveChance / 100 * result.count * safeRuns : 0;
     const marketUnitPrice = getMarketBuyPrice(result.itemId);
     const unitPrice = getEffectiveBuyPrice(result.itemId, prices, assumedPrices);
