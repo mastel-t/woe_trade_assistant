@@ -70,3 +70,15 @@ test("harvest hides only the cost per item metric", () => {
   assert.match(mainSource, /elements\.unitCostMetric\.hidden = isHarvest;/);
   assert.doesNotMatch(mainSource, /elements\.expectedCostMetric\.hidden = isHarvest;/);
 });
+
+test("material return display shows harvest zero percent and preserves craft dash", () => {
+  const assignment = mainSource.match(/returnCell\.textContent = ([\s\S]*?);/);
+  assert.ok(assignment, "material return display assignment exists");
+  const renderReturn = new Function("state", "ingredient", "formatQuantity", `return (${assignment[1]});`);
+  for (const [mode, chance, expected] of [
+    ["harvest", 0, "0%"], ["harvest", 100, "100%"], ["harvest", 96, "96%"],
+    ["craft", 0, "—"], ["craft", 75, "75%"],
+  ]) {
+    assert.equal(renderReturn({ calculatorMode: mode }, { returnChance: chance }, String), expected);
+  }
+});

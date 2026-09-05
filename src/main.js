@@ -669,7 +669,8 @@ function makeIngredientRow(ingredient) {
   assumedPriceCell.append(assumedInput);
 
   const returnCell = document.createElement("td");
-  returnCell.textContent = ingredient.returnChance ? `${formatQuantity(ingredient.returnChance)}%` : "—";
+  returnCell.textContent = state.calculatorMode === "harvest" || ingredient.returnChance
+    ? `${formatQuantity(ingredient.returnChance)}%` : "—";
   const costCell = document.createElement("td");
   costCell.className = "line-cost";
   costCell.textContent = formatMoney(ingredient.expectedCost);
@@ -691,7 +692,8 @@ function renderIngredients(calculation) {
       }))
     : calculation.ingredients;
   elements.ingredientsBody.replaceChildren(...rows.map(makeIngredientRow));
-  const missing = rows.filter((ingredient) => ingredient.unitPrice === null);
+  const missing = rows.filter((ingredient) => ingredient.unitPrice === null
+    && !(state.calculatorMode === "harvest" && ingredient.expectedConsumed === 0));
   elements.missingPriceNote.hidden = missing.length === 0;
   elements.missingPriceNote.textContent = missing.length
     ? `No active sell orders for: ${missing.map((item) => itemName(item.itemId)).join(", ")}. The total is hidden to avoid understating the cost.`

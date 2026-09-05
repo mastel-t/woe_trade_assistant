@@ -131,7 +131,7 @@ export function extractCraftCatalog(config = {}, options = {}) {
 
 function normalizeHarvestCandidate(candidate) {
   const breakChance = candidate?.break_percent === undefined
-    ? 100
+    ? 0
     : clamp(asFiniteNumber(candidate.break_percent), 0, 100);
   return {
     itemId: asFiniteNumber(candidate?.item_id),
@@ -218,11 +218,14 @@ export function calculateHarvest(
   const safeRuns = clamp(Math.trunc(asFiniteNumber(runs, 1)), 1, 1_000_000);
   const getMarketBuyPrice = (itemId) => prices.get(Number(itemId))?.buy ?? null;
   const ingredients = [];
-  const addIngredient = (itemId, quantity) => {
+  const addIngredient = (itemId, quantity, consumedFraction = 1) => {
     if (itemId <= 0 || quantity <= 0) return;
+    const expectedConsumed = quantity * consumedFraction;
     const existing = ingredients.find((ingredient) => ingredient.itemId === itemId);
-    if (existing) existing.quantity += quantity;
-    else ingredients.push({ itemId, quantity, returnChance: 0 });
+    if (existing) {
+      existing.quantity += quantity;
+      existing.expectedConsumed += expectedConsumed;
+    } else ingredients.push({ itemId, quantity, expectedConsumed });
   };
 
   let lootmoreCoef = 1;
@@ -231,7 +234,7 @@ export function calculateHarvest(
     const candidate = slot.candidates[candidateIndex] ?? slot.candidates[0];
     if (!candidate) return;
     lootmoreCoef *= candidate.lootmoreCoef ?? 1;
-    addIngredient(candidate.itemId, candidate.count * (candidate.breakChance / 100) * safeRuns);
+    addIngredient(candidate.itemId, candidate.count * safeRuns, candidate.breakChance / 100);
     candidate.requirements.forEach((requirement) => {
       addIngredient(requirement.itemId, requirement.quantity * safeRuns);
     });
@@ -243,13 +246,14 @@ export function calculateHarvest(
   const calculatedIngredients = ingredients.map((ingredient) => {
     const marketUnitPrice = prices.get(ingredient.itemId)?.sell ?? null;
     const unitPrice = getEffectiveSellPrice(ingredient.itemId, prices, assumedPrices);
-    const lineCost = unitPrice === null ? null : ingredient.quantity * unitPrice;
+    const lineCost = ingredient.expectedConsumed === 0 ? 0
+      : unitPrice === null ? null : ingredient.expectedConsumed * unitPrice;
     if (lineCost === null) costComplete = false;
     else expectedCost += lineCost;
     if (lineCost !== null) purchaseCost += lineCost;
     return {
       ...ingredient,
-      expectedConsumed: ingredient.quantity,
+      returnChance: 100 * (1 - ingredient.expectedConsumed / ingredient.quantity),
       marketUnitPrice,
       unitPrice,
       expectedCost: lineCost,
