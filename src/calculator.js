@@ -55,6 +55,28 @@ export function createItemIndex(items = []) {
   );
 }
 
+function parseBundle(bundle) {
+  if (typeof bundle !== "string") return [];
+  return bundle.split(";").map((entry) => {
+    const [itemId, quantity] = entry.trim().split("x").map(Number);
+    return { itemId, quantity };
+  }).filter((entry) => Number.isFinite(entry.itemId) && entry.itemId > 0
+    && Number.isFinite(entry.quantity) && entry.quantity > 0);
+}
+
+function expandBundle(itemId, quantity, itemIndex, path = new Set()) {
+  const item = itemIndex?.get(Number(itemId));
+  if (!item?.bundle || path.has(Number(itemId))) return [];
+  const nextPath = new Set(path).add(Number(itemId));
+  return parseBundle(item.bundle).flatMap((child) => {
+    const childQuantity = quantity * child.quantity;
+    const nested = expandBundle(child.itemId, childQuantity, itemIndex, nextPath);
+    return nested.length
+      ? nested
+      : [{ itemId: child.itemId, quantity: childQuantity, parentItemId: Number(itemId) }];
+  });
+}
+
 export function extractCraftCatalog(config = {}, options = {}) {
   const groupedByOutput = new Map();
   const enabledReceiptIds = new Set((options.enabledReceiptIds ?? []).map(Number));
@@ -107,13 +129,247 @@ export function extractCraftCatalog(config = {}, options = {}) {
   );
 }
 
+function normalizeHarvestCandidate(candidate) {
+  const breakChance = candidate?.break_percent === undefined
+    ? 100
+    : clamp(asFiniteNumber(candidate.break_percent), 0, 100);
+  return {
+    itemId: asFiniteNumber(candidate?.item_id),
+    count: Math.max(0, asFiniteNumber(candidate?.count, 1)),
+    breakChance,
+    requirements: (candidate?.requirements ?? [])
+      .map((requirement) => ({
+        itemId: asFiniteNumber(requirement?.item_id),
+        quantity: Math.max(0, asFiniteNumber(requirement?.count)),
+      }))
+      .filter((requirement) => requirement.itemId > 0 && requirement.quantity > 0),
+  };
+}
+
+export function extractHarvestCatalog(config = {}) {
+  return (config.harvests ?? [])
+    .filter((receipt) => !receipt?.disabled && Number.isFinite(Number(receipt?.receipt_id)))
+    .map((receipt) => ({
+      key: String(receipt.receipt_id),
+      receiptId: Number(receipt.receipt_id),
+      receipt,
+      slots: (receipt.items_slots ?? []).map((slot, index) => ({
+        key: `${receipt.receipt_id}:${index}`,
+        name: slot.name || `slot_${index + 1}`,
+        candidates: (slot.available_items ?? [])
+          .filter((candidate) => !candidate?.disabled)
+          .map(normalizeHarvestCandidate)
+          .filter((candidate) => candidate.itemId > 0 && candidate.count > 0),
+      })),
+      results: (receipt.result ?? [])
+        .map((result, index) => ({
+          key: `${receipt.receipt_id}:${index}`,
+          itemId: asFiniteNumber(result?.item_id),
+          count: Math.max(0, asFiniteNumber(result?.count)),
+          chance: Math.max(0, asFiniteNumber(result?.chance_percent)),
+          selectable: result?.selectable === true,
+        }))
+        .filter((result) => result.itemId > 0 && result.count > 0),
+    }))
+    .filter((receipt) => receipt.results.length);
+}
+
+export function describeHarvestReceipt(receipt, {
+  itemName = (itemId) => `Item #${itemId}`,
+  translate = (key) => key,
+  selectedCandidates = [],
+} = {}) {
+  const slots = receipt.slots.map((slot, slotIndex) => {
+    if (!slot.candidates.length) return `${translate(slot.name)} has no candidates`;
+    const requestedIndex = Number(selectedCandidates[slotIndex]);
+    const selectedIndex = Number.isInteger(requestedIndex) && requestedIndex >= 0
+      && requestedIndex < slot.candidates.length
+      ? requestedIndex
+      : 0;
+    const candidates = slot.candidates.map((candidate, candidateIndex) => {
+      const requirements = candidate.requirements.length
+        ? candidate.requirements
+          .map((requirement) => `${itemName(requirement.itemId)} (#${requirement.itemId}) x ${requirement.quantity}`)
+          .join(", ")
+        : "none";
+      const selectedLabel = candidateIndex === selectedIndex ? ", selected" : "";
+      return `${itemName(candidate.itemId)} (#${candidate.itemId}; break chance ${candidate.breakChance}%; requirements: ${requirements}${selectedLabel})`;
+    });
+    return `${translate(slot.name)} candidates: ${candidates.join("; ")}`;
+  });
+  const results = receipt.results
+    .map((result) => `${itemName(result.itemId)} (#${result.itemId}) at ${result.chance}% chance, selectable: ${result.selectable}`)
+    .join(", ");
+  const slotText = slots.length ? slots.join("; ") : "no equipment slots";
+  const resultText = results || "no listed results";
+  return `Estimated harvest description: ${slotText}; results may include ${resultText}. This is an approximation based on the receipt data.`;
+}
+
+export function calculateHarvest(
+  receipt,
+  runs,
+  prices,
+  selectedCandidates = [],
+  selectedResultIds = new Set(),
+  assumedPrices = new Map(),
+  itemIndex = new Map(),
+) {
+  const safeRuns = clamp(Math.trunc(asFiniteNumber(runs, 1)), 1, 1_000_000);
+  const getMarketBuyPrice = (itemId) => prices.get(Number(itemId))?.buy ?? null;
+  const ingredients = [];
+  const addIngredient = (itemId, quantity) => {
+    if (itemId <= 0 || quantity <= 0) return;
+    const existing = ingredients.find((ingredient) => ingredient.itemId === itemId);
+    if (existing) existing.quantity += quantity;
+    else ingredients.push({ itemId, quantity, returnChance: 0 });
+  };
+
+  receipt.slots.forEach((slot, slotIndex) => {
+    const candidateIndex = Number(selectedCandidates[slotIndex]);
+    const candidate = slot.candidates[candidateIndex] ?? slot.candidates[0];
+    if (!candidate) return;
+    addIngredient(candidate.itemId, candidate.count * (candidate.breakChance / 100) * safeRuns);
+    candidate.requirements.forEach((requirement) => {
+      addIngredient(requirement.itemId, requirement.quantity * safeRuns);
+    });
+  });
+
+  let expectedCost = 0;
+  let purchaseCost = 0;
+  let costComplete = true;
+  const calculatedIngredients = ingredients.map((ingredient) => {
+    const marketUnitPrice = prices.get(ingredient.itemId)?.sell ?? null;
+    const unitPrice = getEffectiveSellPrice(ingredient.itemId, prices, assumedPrices);
+    const lineCost = unitPrice === null ? null : ingredient.quantity * unitPrice;
+    if (lineCost === null) costComplete = false;
+    else expectedCost += lineCost;
+    if (lineCost !== null) purchaseCost += lineCost;
+    return {
+      ...ingredient,
+      expectedConsumed: ingredient.quantity,
+      marketUnitPrice,
+      unitPrice,
+      expectedCost: lineCost,
+      purchaseCost: lineCost,
+    };
+  });
+
+  const selectableResultCount = receipt.results.filter((result) => result.selectable).length;
+  const checkedSelectableCount = receipt.results.filter((result, resultIndex) => {
+    const key = result.key ?? `${receipt.key ?? receipt.receiptId}:${resultIndex}`;
+    return result.selectable && (selectedResultIds.has(key)
+      || (selectableResultCount === 1 && selectedResultIds.has(result.itemId)));
+  }).length;
+  const outputs = receipt.results.map((result, resultIndex) => {
+    const key = result.key ?? `${receipt.key ?? receipt.receiptId}:${resultIndex}`;
+    const selected = !result.selectable || selectedResultIds.has(key)
+      || (selectableResultCount === 1 && selectedResultIds.has(result.itemId));
+    const effectiveChance = result.selectable
+      ? checkedSelectableCount > 0 && selected ? result.chance / checkedSelectableCount : 0
+      : result.chance;
+    const expected = selected ? effectiveChance / 100 * result.count * safeRuns : 0;
+    const marketUnitPrice = getMarketBuyPrice(result.itemId);
+    const unitPrice = getEffectiveBuyPrice(result.itemId, prices, assumedPrices);
+    const children = expandBundle(result.itemId, expected, itemIndex).map((child, childIndex) => {
+      const childMarketPrice = getMarketBuyPrice(child.itemId);
+      const childPrice = getEffectiveBuyPrice(child.itemId, prices, assumedPrices);
+      return {
+        type: "bundle-child",
+        key: `${key}:child:${childIndex}`,
+        itemId: child.itemId,
+        parentItemId: child.parentItemId,
+        min: child.quantity,
+        max: child.quantity,
+        expected: child.quantity,
+        chance: effectiveChance,
+        baseChance: result.chance,
+        selectable: result.selectable,
+        selected,
+        marketUnitPrice: childMarketPrice,
+        unitPrice: childPrice,
+        revenue: childPrice === null ? null : child.quantity * childPrice,
+      };
+    });
+    const revenue = children.length
+      ? children.every((child) => child.revenue !== null)
+        ? children.reduce((sum, child) => sum + child.revenue, 0)
+        : null
+      : expected === 0 ? 0 : unitPrice === null ? null : expected * unitPrice;
+    return {
+      type: "const",
+      key,
+      itemId: result.itemId,
+      min: expected,
+      max: expected,
+      expected,
+      chance: effectiveChance,
+      baseChance: result.chance,
+      selectable: result.selectable,
+      selected,
+      marketUnitPrice,
+      unitPrice,
+      revenue,
+      children,
+    };
+  });
+  const selectedOutputs = outputs.flatMap((output) => output.children.length ? output.children : [output])
+    .filter((output) => output.selected);
+  const expectedRevenue = selectedOutputs.reduce((sum, output) => sum + (output.revenue ?? 0), 0);
+  const revenueComplete = selectedOutputs.every((output) => output.revenue !== null);
+  const outputQuantity = selectedOutputs.reduce((sum, output) => sum + output.expected, 0);
+  const profit = costComplete && revenueComplete ? expectedRevenue - expectedCost : null;
+
+  return {
+    runs: safeRuns,
+    ingredients: calculatedIngredients,
+    outputs,
+    selectedOutput: selectedOutputs[0] ?? null,
+    expectedCost: costComplete ? expectedCost : null,
+    coveredExpectedCost: expectedCost,
+    purchaseCost: costComplete ? purchaseCost : null,
+    coveredPurchaseCost: purchaseCost,
+    expectedRevenue: revenueComplete ? expectedRevenue : null,
+    coveredExpectedRevenue: expectedRevenue,
+    unitCost: outputQuantity > 0 && costComplete ? expectedCost / outputQuantity : null,
+    profit,
+    costComplete,
+    purchaseComplete: costComplete,
+    revenueComplete,
+    readyItemUnitPrice: null,
+    readyItemPurchaseCost: null,
+    savingsVsBuying: null,
+    root: {
+      kind: "harvest",
+      receiptId: receipt.receiptId,
+      quantity: outputQuantity,
+      children: outputs,
+    },
+  };
+}
+
 export function createPriceIndex(market) {
+  const nullablePrice = (value) => value === undefined || value === null || value === ""
+    ? null
+    : Number.isFinite(Number(value)) ? Number(value) : null;
   return new Map(
-    (market?.items ?? []).map((item) => [Number(item.item_type_id), {
-      buy: item.best_buy_price === undefined ? null : asFiniteNumber(item.best_buy_price),
-      sell: item.best_sell_price === undefined ? null : asFiniteNumber(item.best_sell_price),
-    }]),
+    (market?.items ?? [])
+      .map((item) => ({
+        itemId: Number(item.item_type_id),
+        buy: nullablePrice(item.best_buy_price),
+        sell: nullablePrice(item.best_sell_price),
+      }))
+      .filter((item) => Number.isFinite(item.itemId) && item.itemId > 0)
+      .map((item) => [item.itemId, { buy: item.buy, sell: item.sell }]),
   );
+}
+
+export function getEffectiveBuyPrice(itemId, prices, assumedPrices = new Map()) {
+  const itemKey = Number(itemId);
+  const assumed = assumedPrices.get(itemKey);
+  if (assumed !== undefined && assumed !== null && Number.isFinite(Number(assumed))) {
+    return Number(assumed);
+  }
+  return prices.get(itemKey)?.buy ?? null;
 }
 
 export function getEffectiveSellPrice(itemId, prices, assumedPrices = new Map()) {

@@ -17,6 +17,11 @@ The calculator also shows how much the finished item would cost to buy using
 its `best_sell_price`. “Crafting savings” is the difference between the market
 purchase price of the finished item and its calculated crafting cost.
 
+The `Craft / Harvest` selector switches between crafting recipes and harvest
+receipts. In Harvest mode, each receipt option includes its result item names.
+Every harvest result is kept in a result table; selectable results can be
+included or excluded there, while non-selectable results remain visible.
+
 The `Market / Chain` switch changes how ingredient costs are calculated:
 
 - `Market` buys every ingredient of the selected recipe directly from the
@@ -29,6 +34,20 @@ The chain is an economic estimate: random output and ingredient returns use
 their expected average values. If a nested recipe cannot be fully calculated
 but its intermediate item is available on the marketplace, the calculator
 uses its marketplace price as a fallback.
+
+Harvest calculations use `runs` directly; `duration_sec` and `max_parallel` are
+not used. Every enabled item-slot candidate can be selected. The candidate
+itself is a material: its `count` is multiplied by `break_percent / 100` when
+present, while candidate requirements are consumed at 100%. The materials
+section uses the same `Market / Chain` view as crafting: Market shows the
+aggregated material cost, and Chain recursively expands craftable candidates
+and requirements using the existing craft recipe catalog. Disabled receipts
+and candidates are omitted. Expected results use `chance_percent / 100 * count * runs`, with
+material costs from `best_sell_price` and harvest revenue from
+`best_buy_price`. Assumed prices can be entered per item ID for both material
+costs and harvest result revenue; they override the corresponding marketplace
+price everywhere that item appears. Missing prices are shown without presenting
+an incomplete total.
 
 ## Local setup
 

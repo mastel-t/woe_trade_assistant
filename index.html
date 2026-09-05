@@ -45,10 +45,12 @@
           <div class="controls-panel">
             <div class="control-heading">
               <div>
-                <h1>Crafting calculator</h1>
+                <h1 id="calculatorTitle">Crafting calculator</h1>
                 <p>Live marketplace prices</p>
               </div>
-              <div class="mode-switch" role="group" aria-label="Ingredient cost mode">
+              <div class="mode-switch" role="radiogroup" aria-label="Calculator mode">
+                <label><input id="craftModeButton" name="calculatorMode" type="radio" checked /> Craft</label>
+                <label><input id="harvestModeButton" name="calculatorMode" type="radio" /> Harvest</label>
                 <button id="directModeButton" class="is-active" type="button" aria-pressed="true">Market</button>
                 <button id="chainModeButton" type="button" aria-pressed="false">Chain</button>
               </div>
@@ -85,6 +87,7 @@
                     <option>Loading recipes…</option>
                   </select>
                 </span>
+                <span class="harvest-receipt-summary" id="harvestReceiptSummary" hidden></span>
               </label>
 
               <label class="field" id="recipeField">
@@ -97,7 +100,7 @@
               </label>
 
               <label class="field quantity-field">
-                <span class="field-label">Crafts</span>
+                <span class="field-label" id="runsLabel">Crafts</span>
                 <span class="quantity-control">
                   <button id="decreaseRuns" type="button" aria-label="Decrease quantity">−</button>
                   <input id="runsInput" type="number" min="1" max="1000000" value="1" inputmode="numeric" disabled />
@@ -113,6 +116,7 @@
               </div>
               <div class="perk-list" id="perkList"></div>
             </div>
+            <div class="harvest-options" id="harvestOptions" hidden></div>
           </div>
 
           <div class="loading-panel" id="loadingPanel">
@@ -121,14 +125,15 @@
           </div>
 
           <div class="results" id="results" hidden>
-            <article class="summary-card">
+            <div class="result-column">
+              <article class="summary-card">
               <div class="item-summary">
                 <div class="item-art-wrap">
                   <img id="selectedItemImage" alt="" />
                   <span id="itemTierBadge">T1</span>
                 </div>
                 <div class="item-summary-copy">
-                  <span class="section-label">Crafting result</span>
+                  <span class="section-label" id="resultLabel">Crafting result</span>
                   <h2 id="selectedItemName">—</h2>
                   <p id="selectedRecipeName">—</p>
                   <div class="output-amount" id="outputAmount">—</div>
@@ -136,25 +141,25 @@
               </div>
 
               <div class="metrics-grid">
-                <div class="metric metric-primary">
-                  <span>Expected cost</span>
+                <div class="metric metric-primary" id="expectedCostMetric">
+                  <span id="expectedCostLabel">Expected cost</span>
                   <strong id="expectedCost">—</strong>
-                  <small>including ingredient returns</small>
+                  <small id="expectedCostHint">including ingredient returns</small>
                 </div>
-                <div class="metric">
-                  <span>Per item</span>
+                <div class="metric" id="unitCostMetric">
+                  <span id="unitCostLabel">Per item</span>
                   <strong id="unitCost">—</strong>
                   <small id="unitCostHint">based on average output</small>
                 </div>
-                <div class="metric">
-                  <span>Instant sale</span>
+                <div class="metric" id="instantRevenueMetric">
+                  <span id="instantRevenueLabel">Instant sale</span>
                   <strong id="instantRevenue">—</strong>
-                  <small>at the best buy order</small>
+                  <small id="instantRevenueHint">at the best buy order</small>
                 </div>
-                <div class="metric">
-                  <span>Buy finished item</span>
+                <div class="metric" id="marketPurchaseMetric">
+                  <span id="marketPurchaseLabel">Buy finished item</span>
                   <strong id="marketPurchaseCost">—</strong>
-                  <small>at the best sell order</small>
+                  <small id="marketPurchaseHint">at the best sell order</small>
                 </div>
                 <div class="metric" id="profitMetric">
                   <span>Sale profit</span>
@@ -169,22 +174,27 @@
               </div>
 
               <div class="cost-footnote" id="costFootnote"></div>
-            </article>
+              </article>
+
+              <article class="harvest-output-list harvest-results-card" id="harvestOutputList" hidden></article>
+            </div>
 
             <article class="ingredients-card">
               <div class="card-heading">
                 <div>
                   <h2 id="ingredientsTitle">Ingredients</h2>
                 </div>
-                <div class="purchase-total">
-                  <span id="purchaseLabel">Required upfront</span>
-                  <strong id="purchaseTotal">—</strong>
+                <div class="card-heading-actions">
+                  <div class="purchase-total">
+                    <span id="purchaseLabel">Required upfront</span>
+                    <strong id="purchaseTotal">—</strong>
+                  </div>
                 </div>
               </div>
 
               <div class="chain-tree" id="chainTree" hidden>
                 <div class="chain-tree-heading">
-                  <strong>Crafting steps</strong>
+                  <strong id="chainTreeTitle">Crafting steps</strong>
                   <span id="chainSteps"></span>
                 </div>
                 <div id="chainTreeBody"></div>

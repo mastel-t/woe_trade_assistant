@@ -1,9 +1,11 @@
 import "./styles.css";
 import {
   calculateCraftChain,
+  calculateHarvest,
   calculateRecipe,
   createItemIndex,
   createPriceIndex,
+  extractHarvestCatalog,
   extractCraftCatalog,
 } from "./calculator.js";
 
@@ -17,12 +19,17 @@ const state = {
   translations: {},
   items: new Map(),
   catalog: new Map(),
+  harvestCatalog: [],
   prices: new Map(),
   perkIds: new Set(),
   selectedMarket: null,
   visibleItemIds: [],
   assumedPrices: new Map(),
   costMode: "direct",
+  calculatorMode: "craft",
+  selectedHarvestCandidates: [],
+  selectedHarvestResults: new Set(),
+  harvestSelections: new Map(),
 };
 
 const elements = Object.fromEntries(
@@ -32,11 +39,16 @@ const elements = Object.fromEntries(
     "itemSearch", "itemSelect", "recipeField", "recipeSelect",
     "runsInput", "decreaseRuns", "increaseRuns", "perkList", "selectedItemImage", "itemTierBadge",
     "selectedItemName", "selectedRecipeName", "outputAmount", "expectedCost", "unitCost",
-    "unitCostHint", "instantRevenue", "marketPurchaseCost", "profitMetric", "expectedProfit",
+    "calculatorTitle", "runsLabel", "resultLabel",
+    "harvestOutputList", "harvestReceiptSummary",
+    "expectedCostMetric", "expectedCostLabel", "expectedCostHint", "unitCostMetric", "unitCostLabel",
+    "unitCostHint", "instantRevenueMetric", "instantRevenueLabel", "instantRevenueHint", "instantRevenue",
+    "marketPurchaseMetric", "marketPurchaseLabel", "marketPurchaseHint", "marketPurchaseCost", "profitMetric", "expectedProfit",
     "profitHint", "savingsMetric", "craftSavings", "savingsHint",
     "costFootnote", "purchaseTotal", "purchaseLabel", "ingredientsTitle", "ingredientsBody",
     "missingPriceNote", "coProducts", "directModeButton", "chainModeButton", "chainTree",
-    "chainSteps", "chainTreeBody",
+    "chainSteps", "chainTreeBody", "chainTreeTitle",
+    "craftModeButton", "harvestModeButton", "harvestOptions",
   ].map((id) => [id, document.getElementById(id)]),
 );
 
@@ -100,6 +112,10 @@ function recipeByKey(key) {
   return state.catalog.get(itemId)?.find((recipe) => recipe.key === key) ?? null;
 }
 
+function selectedHarvest() {
+  return state.harvestCatalog.find((receipt) => receipt.key === elements.itemSelect.value) ?? null;
+}
+
 function selectedRecipe() {
   return recipeByKey(elements.recipeSelect.value);
 }
@@ -151,6 +167,7 @@ async function loadData() {
 
     elements.liveBadge.title = `Configuration ${config.version || "unversioned"} · prices as of ${dateFormatter.format(new Date(marketplace.server_now_unix_ms))}`;
     populatePerks();
+    state.harvestCatalog = extractHarvestCatalog(config);
     rebuildCatalog();
     populateCities();
     selectMarket(elements.citySelect.value);
@@ -223,17 +240,24 @@ function populatePerks() {
 function rebuildCatalog() {
   const previousItemId = Number(elements.itemSelect.value);
   state.catalog = extractCraftCatalog(state.config, { enabledReceiptIds: enabledReceiptIds() });
-  populateItems(elements.itemSearch.value, state.catalog.has(previousItemId) ? previousItemId : null);
+  if (state.calculatorMode === "craft") {
+    populateItems(elements.itemSearch.value, state.catalog.has(previousItemId) ? previousItemId : null);
+  } else {
+    populateItems(elements.itemSearch.value, state.harvestCatalog.some((receipt) => receipt.key === elements.itemSelect.value) ? elements.itemSelect.value : null);
+  }
 }
 
 function selectMarket(marketId) {
   const previousItemId = Number(elements.itemSelect.value);
+  const previousReceiptKey = elements.itemSelect.value;
   state.selectedMarket = marketById(marketId) ?? state.marketplace.markets[0];
   elements.citySelect.value = state.selectedMarket.city.uuid;
   state.prices = createPriceIndex(state.selectedMarket);
   populateItems(
     elements.itemSearch.value,
-    state.catalog.has(previousItemId) ? previousItemId : null,
+    state.calculatorMode === "harvest"
+      ? previousReceiptKey
+      : state.catalog.has(previousItemId) ? previousItemId : null,
   );
 }
 
@@ -261,6 +285,10 @@ function bestInitialItemId() {
 }
 
 function populateItems(search = "", preferredItemId = null) {
+  if (state.calculatorMode === "harvest") {
+    populateHarvestReceipts(search, preferredItemId);
+    return;
+  }
   const needle = search.trim().toLocaleLowerCase("en");
   const matching = availableItemIds()
     .map((itemId) => ({ itemId, label: itemName(itemId) }))
@@ -295,6 +323,85 @@ function populateItems(search = "", preferredItemId = null) {
   elements.results.hidden = false;
 }
 
+function populateHarvestReceipts(search = "", preferredReceiptKey = null) {
+  const needle = search.trim().toLocaleLowerCase("en");
+  const matching = state.harvestCatalog.filter((receipt) => (
+    !needle || `receipt ${receipt.receiptId}`.includes(needle) || String(receipt.receiptId).includes(needle)
+  ));
+  elements.itemSelect.replaceChildren();
+  if (!matching.length) {
+    setOption(elements.itemSelect, "", "No receipts found");
+    elements.itemSelect.disabled = true;
+    elements.harvestOptions.replaceChildren();
+    elements.results.hidden = true;
+    return;
+  }
+  matching.forEach((receipt) => setOption(
+    elements.itemSelect,
+    receipt.key,
+    `Receipt #${receipt.receiptId} — ${receipt.results.map((result) => itemName(result.itemId)).join(" / ")}`,
+  ));
+  elements.itemSelect.disabled = false;
+  elements.itemSelect.value = matching.some((receipt) => receipt.key === preferredReceiptKey)
+    ? preferredReceiptKey
+    : matching[0].key;
+  elements.harvestReceiptSummary.hidden = true;
+  populateHarvestOptions();
+  elements.results.hidden = false;
+  renderCalculation();
+}
+
+function populateHarvestOptions() {
+  const receipt = selectedHarvest();
+  elements.harvestOptions.replaceChildren();
+  elements.harvestOptions.hidden = !receipt;
+  if (!receipt) return;
+  let selection = state.harvestSelections.get(receipt.key);
+  if (!selection) {
+    selection = {
+      candidates: receipt.slots.map(() => 0),
+      results: new Set(receipt.results.filter((result) => result.selectable).map((result) => result.key)),
+    };
+    state.harvestSelections.set(receipt.key, selection);
+  }
+  selection.candidates = receipt.slots.map((slot, index) => {
+    if (!slot.candidates.length) return 0;
+    return Math.min(Math.max(Number(selection.candidates[index]) || 0, 0), slot.candidates.length - 1);
+  });
+  state.selectedHarvestCandidates = selection.candidates;
+  state.selectedHarvestResults = selection.results;
+  const heading = document.createElement("span");
+  heading.className = "field-label";
+  heading.textContent = "Harvest equipment";
+  elements.harvestOptions.append(heading);
+
+  receipt.slots.forEach((slot, slotIndex) => {
+    if (!slot.candidates.length) {
+      const empty = document.createElement("span");
+      empty.className = "harvest-empty";
+      empty.textContent = `${translate(slot.name)}: no candidates`;
+      elements.harvestOptions.append(empty);
+      return;
+    }
+    const label = document.createElement("label");
+    label.className = "harvest-option";
+    const title = document.createElement("span");
+    title.textContent = translate(slot.name);
+    const select = document.createElement("select");
+    slot.candidates.forEach((candidate, candidateIndex) => {
+      setOption(select, candidateIndex, `${itemName(candidate.itemId)} · #${candidate.itemId}`);
+    });
+    select.value = String(state.selectedHarvestCandidates[slotIndex]);
+    select.addEventListener("change", () => {
+      selection.candidates[slotIndex] = Number(select.value);
+      renderCalculation();
+    });
+    label.append(title, select);
+    elements.harvestOptions.append(label);
+  });
+
+}
+
 function populateRecipes() {
   const recipes = state.catalog.get(Number(elements.itemSelect.value)) ?? [];
   const previous = elements.recipeSelect.value;
@@ -327,6 +434,10 @@ function renderOutputAmount(output) {
   return `${formatQuantity(output.min)}–${formatQuantity(output.max)} items · ${formatQuantity(output.expected)} average`;
 }
 
+function renderHarvestChance(output) {
+  return `${formatQuantity(output.chance)}% (base ${formatQuantity(output.baseChance)}%)`;
+}
+
 function renderItemHeader(recipe, calculation) {
   const item = state.items.get(recipe.outputItemId) ?? {};
   const imageUrl = item.icon_url_large || item.icon_url || recipe.iconUrl;
@@ -338,6 +449,119 @@ function renderItemHeader(recipe, calculation) {
   elements.selectedItemName.textContent = itemName(recipe.outputItemId);
   elements.selectedRecipeName.textContent = translate(recipe.recipeName);
   elements.outputAmount.textContent = renderOutputAmount(calculation.selectedOutput);
+  elements.harvestOutputList.replaceChildren();
+  elements.harvestOutputList.hidden = true;
+}
+
+function renderHarvestHeader(receipt, calculation) {
+  const selectedOutputs = calculation.outputs.filter((output) => output.selected);
+  const output = selectedOutputs[0] ?? null;
+  const item = state.items.get(output?.itemId) ?? {};
+  const imageUrl = item.icon_url_large || item.icon_url || "";
+  elements.selectedItemImage.src = imageUrl;
+  elements.selectedItemImage.hidden = !imageUrl;
+  elements.selectedItemImage.alt = output ? itemName(output.itemId) : "";
+  elements.itemTierBadge.textContent = output ? `#${output.itemId}` : `#${receipt.receiptId}`;
+  elements.selectedItemName.textContent = `Receipt #${receipt.receiptId}`;
+  elements.selectedRecipeName.textContent = "Harvest result";
+  elements.outputAmount.textContent = output ? `${formatQuantity(calculation.root.quantity)} expected items` : "No selected results";
+  const wrapper = document.createElement("div");
+  wrapper.className = "harvest-results-table-wrap";
+  const table = document.createElement("table");
+  table.className = "harvest-results-table";
+  table.innerHTML = "<thead><tr><th>Result item</th><th>Chance<br><span>(effective / base)</span></th><th>Expected<br>quantity</th><th>Market buy<br>unit price</th><th>Assumed price</th><th>Expected sale</th></tr></thead>";
+  const body = document.createElement("tbody");
+  calculation.outputs.forEach((harvestOutput) => {
+    const row = document.createElement("tr");
+    const isBundleParent = harvestOutput.children.length > 0;
+    if (isBundleParent) row.className = "bundle-parent-row";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = harvestOutput.selected;
+    checkbox.disabled = !harvestOutput.selectable;
+    checkbox.setAttribute("aria-label", `Include ${itemName(harvestOutput.itemId)}`);
+    if (harvestOutput.selectable) {
+      checkbox.addEventListener("change", () => {
+        const selection = state.harvestSelections.get(receipt.key);
+        if (checkbox.checked) selection.results.add(harvestOutput.key);
+        else selection.results.delete(harvestOutput.key);
+        renderCalculation();
+      });
+      const itemCell = document.createElement("td");
+      itemCell.append(checkbox, document.createTextNode(` ${itemName(harvestOutput.itemId)}`));
+      row.append(itemCell);
+    } else {
+      const itemCell = document.createElement("td");
+      itemCell.append(checkbox, document.createTextNode(` ${itemName(harvestOutput.itemId)}`));
+      row.append(itemCell);
+    }
+    const assumedCell = makeHarvestAssumedPriceCell(harvestOutput.itemId);
+    for (const text of [
+      renderHarvestChance(harvestOutput),
+      formatQuantity(harvestOutput.expected),
+      isBundleParent ? "—" : formatMoney(harvestOutput.marketUnitPrice),
+    ]) {
+      const cell = document.createElement("td");
+      cell.textContent = text;
+      row.append(cell);
+    }
+    row.append(isBundleParent ? document.createElement("td") : assumedCell);
+    const revenueCell = document.createElement("td");
+    revenueCell.textContent = isBundleParent ? "—" : formatMoney(harvestOutput.revenue);
+    row.append(revenueCell);
+    body.append(row);
+    harvestOutput.children.forEach((child) => {
+      const childRow = document.createElement("tr");
+      childRow.className = "bundle-child-row";
+      const childItemCell = document.createElement("td");
+      childItemCell.textContent = `- ${itemName(child.itemId)}`;
+      childRow.append(childItemCell);
+      for (const text of [
+        renderHarvestChance(child),
+        formatQuantity(child.expected),
+        formatMoney(child.marketUnitPrice),
+      ]) {
+        const cell = document.createElement("td");
+        cell.textContent = text;
+        childRow.append(cell);
+      }
+      childRow.append(makeHarvestAssumedPriceCell(child.itemId));
+      const childRevenueCell = document.createElement("td");
+      childRevenueCell.textContent = formatMoney(child.revenue);
+      childRow.append(childRevenueCell);
+      body.append(childRow);
+    });
+  });
+  table.append(body);
+  wrapper.append(table);
+  elements.harvestOutputList.replaceChildren(wrapper);
+  elements.harvestOutputList.hidden = false;
+}
+
+function makeHarvestAssumedPriceCell(itemId) {
+  const cell = document.createElement("td");
+  const input = document.createElement("input");
+  input.type = "number";
+  input.min = "0";
+  input.step = "0.01";
+  input.placeholder = "—";
+  input.className = "assumed-price-input harvest-assumed-price-input";
+  const value = state.assumedPrices.get(itemId);
+  input.value = Number.isFinite(value) ? String(value) : "";
+  input.addEventListener("change", () => updateAssumedPrice(itemId, input.value));
+  cell.append(input);
+  return cell;
+}
+
+function updateAssumedPrice(itemId, value) {
+  const trimmed = value.trim();
+  if (!trimmed) state.assumedPrices.delete(itemId);
+  else {
+    const numeric = Number(trimmed);
+    if (!Number.isFinite(numeric) || numeric < 0) return;
+    state.assumedPrices.set(itemId, numeric);
+  }
+  renderCalculation();
 }
 
 function renderMetrics(calculation) {
@@ -355,10 +579,14 @@ function renderMetrics(calculation) {
     elements.profitHint.textContent = "requires all market prices";
   } else if (calculation.profit >= 0) {
     elements.profitMetric.classList.add("is-positive");
-    elements.profitHint.textContent = "profit before fees";
+    elements.profitHint.textContent = state.calculatorMode === "harvest"
+      ? "sale value minus materials"
+      : "profit before fees";
   } else {
     elements.profitMetric.classList.add("is-negative");
-    elements.profitHint.textContent = "loss before fees";
+    elements.profitHint.textContent = state.calculatorMode === "harvest"
+      ? "sale value minus materials"
+      : "loss before fees";
   }
 
   elements.savingsMetric.classList.remove("is-positive", "is-negative", "is-unknown");
@@ -378,7 +606,9 @@ function renderMetrics(calculation) {
     ? "based on actual output"
     : "based on average output";
 
-  if (state.costMode === "chain") {
+  if (state.calculatorMode === "harvest") {
+    elements.costFootnote.textContent = "NET RESULT = expected sale value minus material cost. Selectable results split their base chance evenly across checked results; bundle children carry the sale value.";
+  } else if (state.costMode === "chain") {
     elements.costFootnote.textContent = "The chain automatically expands craftable ingredients into raw materials and selects the cheapest complete recipe. Quantities use average output and expected consumption after returns.";
   } else {
     const reusableCount = calculation.ingredients.filter((item) => item.returnChance > 0).length;
@@ -450,7 +680,7 @@ function makeIngredientRow(ingredient) {
 }
 
 function renderIngredients(calculation) {
-  const rows = state.costMode === "chain"
+  const rows = state.costMode === "chain" && calculation.rawMaterials
     ? calculation.rawMaterials.map((material) => ({
         itemId: material.itemId,
         quantity: material.quantity,
@@ -467,8 +697,12 @@ function renderIngredients(calculation) {
     ? `No active sell orders for: ${missing.map((item) => itemName(item.itemId)).join(", ")}. The total is hidden to avoid understating the cost.`
     : "";
 
-  elements.ingredientsTitle.textContent = state.costMode === "chain" ? "Market raw materials" : "Ingredients";
-  elements.purchaseLabel.textContent = state.costMode === "chain" ? "Raw material cost" : "Required upfront";
+  elements.ingredientsTitle.textContent = state.calculatorMode === "harvest"
+    ? "Harvest materials"
+    : state.costMode === "chain" ? "Market raw materials" : "Ingredients";
+  elements.purchaseLabel.textContent = state.calculatorMode === "harvest"
+    ? "Expected material cost"
+    : state.costMode === "chain" ? "Raw material cost" : "Required upfront";
 }
 
 function renderCoProducts(recipe, calculation) {
@@ -490,7 +724,6 @@ function makeChainNode(node, depth = 0) {
   if (node.kind === "market") {
     const leaf = document.createElement("div");
     leaf.className = "chain-leaf";
-
     const marker = document.createElement("span");
     marker.className = "chain-marker";
     marker.textContent = "M";
@@ -499,7 +732,6 @@ function makeChainNode(node, depth = 0) {
     const meta = document.createElement("span");
     meta.textContent = `${formatQuantity(node.quantity)} items · ${formatMoney(node.cost)}`;
     if (node.reason === "recipe_incomplete") meta.title = "A recipe exists, but the complete chain cannot currently be calculated";
-
     leaf.append(marker, label, meta);
     return leaf;
   }
@@ -507,7 +739,6 @@ function makeChainNode(node, depth = 0) {
   const details = document.createElement("details");
   details.className = "chain-node";
   details.open = depth === 0;
-
   const summary = document.createElement("summary");
   const labelWrap = document.createElement("span");
   labelWrap.className = "chain-node-label";
@@ -521,7 +752,6 @@ function makeChainNode(node, depth = 0) {
   recipeLabel.textContent = translate(node.recipe.recipeName);
   labels.append(label, recipeLabel);
   labelWrap.append(marker, labels);
-
   const meta = document.createElement("span");
   meta.className = "chain-node-meta";
   const quantity = document.createElement("span");
@@ -529,12 +759,9 @@ function makeChainNode(node, depth = 0) {
   const comparison = document.createElement("span");
   comparison.className = "chain-cost-compare";
   comparison.textContent = `Craft ${formatMoney(node.cost)} · buy ${formatMoney(node.marketPurchaseCost)}`;
-  if (node.cost !== null && node.marketPurchaseCost !== null) {
-    comparison.classList.add(node.cost <= node.marketPurchaseCost ? "is-cheaper" : "is-expensive");
-  }
+  if (node.cost !== null && node.marketPurchaseCost !== null) comparison.classList.add(node.cost <= node.marketPurchaseCost ? "is-cheaper" : "is-expensive");
   meta.append(quantity, comparison);
   summary.append(labelWrap, meta);
-
   const children = document.createElement("div");
   children.className = "chain-children";
   children.append(...node.children.map((child) => makeChainNode(child, depth + 1)));
@@ -547,12 +774,67 @@ function renderChain(calculation) {
   elements.chainTree.hidden = !isChain;
   elements.chainTreeBody.replaceChildren();
   if (!isChain) return;
-
+  elements.chainTreeTitle.textContent = "Crafting steps";
   elements.chainSteps.textContent = `${calculation.craftSteps} step${calculation.craftSteps === 1 ? "" : "s"}`;
   elements.chainTreeBody.append(makeChainNode(calculation.root));
 }
 
 function renderCalculation() {
+  if (state.calculatorMode === "harvest") {
+    const receipt = selectedHarvest();
+    if (!receipt || !state.selectedMarket) return;
+    const calculation = calculateHarvest(
+      receipt,
+      elements.runsInput.value,
+      state.prices,
+      state.selectedHarvestCandidates,
+      state.selectedHarvestResults,
+      state.assumedPrices,
+      state.items,
+    );
+    elements.runsInput.value = String(calculation.runs);
+    const chainOutputItemId = calculation.outputs.find((output) => output.selected)?.itemId ?? receipt.results[0]?.itemId;
+    const chainOutput = {
+      type: "const",
+      itemId: chainOutputItemId,
+      min: 1,
+      max: 1,
+      expected: 1,
+    };
+    const chainRecipe = {
+      outputItemId: chainOutputItemId,
+      ingredients: calculation.ingredients,
+      outputs: [chainOutput],
+      selectedOutput: chainOutput,
+      recipeName: "Harvest materials",
+    };
+    const chainCalculation = calculateCraftChain(
+      chainRecipe,
+      1,
+      state.prices,
+      state.catalog,
+      {},
+      state.assumedPrices,
+    );
+    const displayedCalculation = state.costMode === "chain"
+      ? {
+          ...calculation,
+          ...chainCalculation,
+          expectedRevenue: calculation.expectedRevenue,
+          coveredExpectedRevenue: calculation.coveredExpectedRevenue,
+          revenueComplete: calculation.revenueComplete,
+          profit: chainCalculation.expectedCost === null || calculation.expectedRevenue === null
+            ? null
+            : calculation.expectedRevenue - chainCalculation.expectedCost,
+        }
+      : calculation;
+    renderHarvestHeader(receipt, calculation);
+    renderMetrics(displayedCalculation);
+    renderIngredients(displayedCalculation);
+    elements.coProducts.hidden = true;
+    renderChain(chainCalculation);
+    return;
+  }
   const recipe = selectedRecipe();
   if (!recipe || !state.selectedMarket) return;
   const calculation = state.costMode === "chain"
@@ -576,6 +858,39 @@ function setCostMode(mode) {
   renderCalculation();
 }
 
+function setCalculatorMode(mode) {
+  state.calculatorMode = mode === "harvest" ? "harvest" : "craft";
+  const isHarvest = state.calculatorMode === "harvest";
+  elements.craftModeButton.checked = !isHarvest;
+  elements.harvestModeButton.checked = isHarvest;
+  elements.calculatorTitle.textContent = isHarvest ? "Harvest calculator" : "Crafting calculator";
+  elements.runsLabel.textContent = isHarvest ? "Runs" : "Crafts";
+  elements.resultLabel.textContent = isHarvest ? "Harvest result" : "Crafting result";
+  elements.expectedCostLabel.textContent = isHarvest ? "Expected material cost" : "Expected cost";
+  elements.expectedCostHint.textContent = isHarvest ? "candidate and requirement cost" : "including ingredient returns";
+  elements.unitCostLabel.textContent = isHarvest ? "Cost per item" : "Per item";
+  elements.instantRevenueLabel.textContent = isHarvest ? "Expected sale" : "Instant sale";
+  elements.instantRevenueHint.textContent = isHarvest ? "selected outputs at the best buy order" : "at the best buy order";
+  elements.marketPurchaseLabel.textContent = "Buy finished item";
+  elements.marketPurchaseHint.textContent = "at the best sell order";
+  elements.profitMetric.querySelector("span").textContent = isHarvest ? "Net result" : "Sale profit";
+  elements.profitHint.textContent = isHarvest ? "sale value minus materials" : "before fees";
+  elements.marketPurchaseMetric.hidden = isHarvest;
+  elements.unitCostMetric.hidden = isHarvest;
+  elements.savingsMetric.hidden = isHarvest;
+  elements.chainModeButton.hidden = false;
+  elements.directModeButton.hidden = false;
+  elements.itemSearch.closest(".field").querySelector(".field-label").textContent = isHarvest ? "Find receipt" : "Find item";
+  elements.itemSelect.closest(".field").querySelector(".field-label").textContent = isHarvest ? "Receipt" : "Item";
+  elements.recipeField.hidden = isHarvest;
+  elements.harvestReceiptSummary.hidden = !isHarvest;
+  elements.harvestOptions.hidden = !isHarvest;
+  state.selectedHarvestResults = new Set();
+  state.selectedHarvestCandidates = [];
+  populateItems(elements.itemSearch.value);
+  renderCalculation();
+}
+
 function changeRuns(delta) {
   const value = Number(elements.runsInput.value) || 1;
   elements.runsInput.value = String(Math.min(1_000_000, Math.max(1, value + delta)));
@@ -583,10 +898,16 @@ function changeRuns(delta) {
 }
 
 elements.citySelect.addEventListener("change", () => selectMarket(elements.citySelect.value));
-elements.itemSearch.addEventListener("input", () => populateItems(elements.itemSearch.value, Number(elements.itemSelect.value)));
+elements.itemSearch.addEventListener("input", () => populateItems(
+  elements.itemSearch.value,
+  state.calculatorMode === "harvest" ? elements.itemSelect.value : Number(elements.itemSelect.value),
+));
 elements.itemSelect.addEventListener("change", () => {
   state.assumedPrices.clear();
-  populateRecipes();
+  if (state.calculatorMode === "harvest") {
+    populateHarvestOptions();
+    renderCalculation();
+  } else populateRecipes();
 });
 elements.recipeSelect.addEventListener("change", renderCalculation);
 elements.runsInput.addEventListener("input", renderCalculation);
@@ -595,6 +916,8 @@ elements.decreaseRuns.addEventListener("click", () => changeRuns(-1));
 elements.increaseRuns.addEventListener("click", () => changeRuns(1));
 elements.directModeButton.addEventListener("click", () => setCostMode("direct"));
 elements.chainModeButton.addEventListener("click", () => setCostMode("chain"));
+elements.craftModeButton.addEventListener("change", () => setCalculatorMode("craft"));
+elements.harvestModeButton.addEventListener("change", () => setCalculatorMode("harvest"));
 elements.refreshButton.addEventListener("click", loadData);
 elements.errorRetryButton.addEventListener("click", loadData);
 
