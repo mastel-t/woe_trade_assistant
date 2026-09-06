@@ -327,6 +327,7 @@ function populateHarvestReceipts(search = "", preferredReceiptKey = null) {
   const needle = search.trim().toLocaleLowerCase("en");
   const matching = state.harvestCatalog.filter((receipt) => (
     !needle || `receipt ${receipt.receiptId}`.includes(needle) || String(receipt.receiptId).includes(needle)
+    || receipt.results.some((result) => itemName(result.itemId).toLocaleLowerCase("en").includes(needle))
   ));
   elements.itemSelect.replaceChildren();
   if (!matching.length) {

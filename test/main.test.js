@@ -5,6 +5,72 @@ import test from "node:test";
 const mainSource = await readFile(new URL("../src/main.js", import.meta.url), "utf8");
 const htmlSource = await readFile(new URL("../index.html", import.meta.url), "utf8");
 
+test("harvest receipt search matches output names and recovers from no matches", () => {
+  const population = mainSource.match(/function populateHarvestReceipts\([^]*?\n\}/);
+  assert.ok(population, "harvest receipt population function exists");
+  const state = {
+    harvestCatalog: [
+      { key: "harvest:24", receiptId: 24, results: [{ itemId: 1 }] },
+      { key: "harvest:25", receiptId: 25, results: [{ itemId: 99 }, { itemId: 37 }] },
+      { key: "harvest:26", receiptId: 26, results: [] },
+    ],
+  };
+  const itemNames = new Map([[1, "Wood"], [99, "Shell"], [37, "Salt"]]);
+  const elements = {
+    itemSelect: {
+      options: [],
+      value: "",
+      disabled: false,
+      replaceChildren() { this.options = []; this.value = ""; },
+    },
+    harvestOptions: {
+      children: ["previous options"],
+      replaceChildren() { this.children = []; },
+    },
+    harvestReceiptSummary: { hidden: false },
+    results: { hidden: false },
+  };
+  let renders = 0;
+  const populate = new Function(
+    "state", "elements", "itemName", "setOption", "populateHarvestOptions", "renderCalculation",
+    `${population[0]}; return populateHarvestReceipts;`,
+  )(
+    state, elements, (id) => itemNames.get(id) ?? `Item #${id}`,
+    (select, value, label) => select.options.push({ value, label }),
+    () => {}, () => { renders += 1; },
+  );
+
+  for (const search of ["Shell", "shell", "  SHELL  ", "hel", "Salt", "25", "receipt 25"]) {
+    populate(search);
+    assert.deepEqual(elements.itemSelect.options, [
+      { value: "harvest:25", label: "Receipt #25 — Shell / Salt" },
+    ], search);
+    assert.equal(elements.itemSelect.value, "harvest:25");
+    assert.equal(elements.itemSelect.disabled, false);
+    assert.equal(elements.results.hidden, false);
+  }
+
+  const rendersBeforeNoMatch = renders;
+  populate("unknown output");
+  assert.deepEqual(elements.itemSelect.options, [{ value: "", label: "No receipts found" }]);
+  assert.equal(elements.itemSelect.disabled, true);
+  assert.equal(elements.results.hidden, true);
+  assert.deepEqual(elements.harvestOptions.children, []);
+  assert.equal(renders, rendersBeforeNoMatch);
+
+  populate("", "harvest:25");
+  assert.equal(elements.itemSelect.options.length, 3);
+  assert.equal(elements.itemSelect.value, "harvest:25");
+  assert.equal(elements.itemSelect.disabled, false);
+  assert.equal(elements.results.hidden, false);
+  assert.equal(renders, rendersBeforeNoMatch + 1);
+
+  state.harvestCatalog = [];
+  populate("");
+  assert.equal(elements.itemSelect.disabled, true);
+  assert.equal(elements.results.hidden, true);
+});
+
 test("harvest receipt population rerenders the selected receipt", () => {
   assert.match(mainSource, /populateHarvestOptions\(\);\s*elements\.results\.hidden = false;\s*renderCalculation\(\);/);
   assert.match(mainSource, /Receipt #\$\{receipt\.receiptId\} — \$\{receipt\.results\.map/);
