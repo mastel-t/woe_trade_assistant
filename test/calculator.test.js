@@ -18,6 +18,95 @@ import {
 
 const sampleConfig = JSON.parse(await readFile(new URL("../sample/configs.json", import.meta.url), "utf8"));
 
+test("calculateHarvest adds equipment increases and reductions before capping each drop", () => {
+  const calculate = (coefficients) => calculateHarvest({
+    receiptId: 90,
+    slots: coefficients.map((lootmoreCoef, index) => ({ candidates: [{
+      itemId: index + 1, count: 1, breakChance: 0, requirements: [], lootmoreCoef,
+    }] })),
+    results: [10, 40].map((chance) => ({ itemId: 100, count: 2, chance, selectable: false })),
+  }, 3, new Map([[100, { buy: 10 }]]));
+
+  const result = calculate([2.5, 1.5, 2]);
+  assert.deepEqual(result.outputs.map((output) => output.chance), [40, 100]);
+  assert.ok(Math.abs(result.outputs[0].expected - 2.4) < 1e-12);
+  assert.equal(result.expectedRevenue, 84);
+  assert.deepEqual(calculate([0.5, 2]).outputs.map((output) => output.chance), [15, 60]);
+  assert.deepEqual(calculate([0.5, 0.5, 0.5]).outputs.map((output) => output.chance), [0, 0]);
+});
+
+test("calculateHarvest normalizes the actual Abyss healer and cannibal rewards", () => {
+  const receipt = extractHarvestCatalog(sampleConfig).find((entry) => entry.receiptId === 23);
+  const itemIndex = createItemIndex(sampleConfig.items);
+  for (const [key, itemId, chance, childIds, expected, probabilities] of [
+    ["23:1", 66, 4, [61, 71, 73], [0.016, 0.008, 0.016], [0.4, 0.2, 0.4]],
+    ["23:3", 68, 28, [42, 9, 22], [0.014, 0.112, 0.154], [0.05, 0.4, 0.55]],
+  ]) {
+    const output = calculateHarvest(receipt, 1, new Map(), [2, 2, 1],
+      new Set([key]), new Map(), itemIndex).outputs.find((entry) => entry.itemId === itemId);
+    assert.equal(output.chance, chance);
+    assert.deepEqual(output.children.map((child) => child.itemId), childIds);
+    output.children.forEach((child, index) => {
+      assert.ok(Math.abs(child.expected - expected[index]) < 1e-12);
+      assert.ok(Math.abs(child.chance - output.chance * probabilities[index]) < 1e-12);
+      assert.ok(Math.abs(child.baseChance - output.baseChance * probabilities[index]) < 1e-12);
+    });
+    assert.ok(Math.abs(output.children.reduce((sum, child) => sum + child.expected, 0)
+      - output.expected) < 1e-12);
+  }
+});
+
+test("calculateHarvest normalizes non-Abyss rollers and preserves nested mushroom bundle counts", () => {
+  const itemIndex = createItemIndex(sampleConfig.items);
+  for (const [itemId, childIds, expected, chances] of [
+    [100, [101, 102], [1, 9], [10, 90]],
+    [139, [136, 73, 107], [4, 4, 6], [40, 40, 20]],
+    [152, [136, 73, 107, 9002], [0.8, 0.8, 1.2, 8], [8, 8, 4, 80]],
+  ]) {
+    const output = calculateHarvest({ receiptId: 90, slots: [],
+      results: [{ itemId, count: 1, chance: 100, selectable: false }],
+    }, 10, new Map(), [], new Set(), new Map(), itemIndex).outputs[0];
+    assert.deepEqual(output.children.map((child) => child.itemId), childIds);
+    output.children.forEach((child, index) => {
+      assert.ok(Math.abs(child.expected - expected[index]) < 1e-12);
+      assert.equal(child.chance, chances[index]);
+      assert.equal(child.baseChance, chances[index]);
+    });
+  }
+});
+
+test("calculateHarvest composes nested roller probabilities inside ordinary bundles", () => {
+  const itemIndex = new Map([
+    [100, { bundle: "101x2;104x3" }],
+    [101, { type: "roller", bundle: "102x1;104x1" }],
+    [102, { type: "roller", bundle: "103x1;104x3" }],
+  ]);
+  const receipt = { receiptId: 90, slots: [],
+    results: [{ itemId: 100, count: 2, chance: 50, selectable: false }],
+  };
+  const result = calculateHarvest(receipt, 4, new Map([[103, { buy: 10 }], [104, { buy: 2 }]]),
+    [], new Set(), new Map(), itemIndex);
+  const children = result.outputs[0].children;
+  assert.deepEqual(children.map((child) => child.expected), [1, 3, 4, 12]);
+  assert.deepEqual(children.map((child) => child.chance), [6.25, 18.75, 25, 50]);
+  assert.equal(result.expectedRevenue, 48);
+  receipt.results[0].chance = 0;
+  const zero = calculateHarvest(receipt, 4, new Map(), [], new Set(), new Map(), itemIndex);
+  assert.equal(zero.expectedRevenue, 0);
+  assert.equal(zero.revenueComplete, true);
+});
+
+test("calculateHarvest safely retains unexpandable and cyclic reward data", () => {
+  for (const bundle of [undefined, "", "bad;101x0;102x-1", "100x1"]) {
+    const result = calculateHarvest({ receiptId: 90, slots: [],
+      results: [{ itemId: 100, count: 1, chance: 100, selectable: false }],
+    }, 1, new Map([[100, { buy: 5 }]]), [], new Set(), new Map(),
+    new Map([[100, { type: "roller", bundle }]]));
+    assert.equal(result.expectedRevenue, 5);
+    assert.equal(result.root.quantity, 1);
+  }
+});
+
 test("extractHarvestCatalog excludes disabled receipts and candidates", () => {
   const catalog = extractHarvestCatalog({
     harvests: [{
@@ -82,15 +171,15 @@ test("calculateHarvest combines selected slot bonuses after selectable sharing a
   const itemIndex = new Map([[143, { bundle: "107x3" }]]);
   const result = calculateHarvest(receipt, 2, prices, [0, 1], new Set(["90:0", "90:1"]), new Map(), itemIndex);
 
-  assert.deepEqual(result.outputs.map((output) => output.chance), [90, 100, 0, 0]);
+  assert.deepEqual(result.outputs.map((output) => output.chance), [75, 100, 0, 0]);
   assert.equal(result.outputs[0].baseChance, 60);
-  assert.equal(result.outputs[0].expected, 3.6);
-  assert.equal(result.outputs[0].children[0].chance, 90);
-  assert.ok(Math.abs(result.outputs[0].children[0].expected - 10.8) < 1e-12);
+  assert.equal(result.outputs[0].expected, 3);
+  assert.equal(result.outputs[0].children[0].chance, 75);
+  assert.equal(result.outputs[0].children[0].expected, 9);
   assert.equal(result.outputs[1].expected, 2);
   assert.equal(result.outputs[2].expected, 0);
   assert.equal(result.outputs[3].expected, 0);
-  assert.ok(Math.abs(result.expectedRevenue - 118) < 1e-12);
+  assert.equal(result.expectedRevenue, 100);
 
   const fallback = calculateHarvest(receipt, 1, prices, [99, 99], new Set(["90:0", "90:1"]), new Map(), itemIndex);
   assert.deepEqual(fallback.outputs.map((output) => output.chance), [45, 60, 0, 0]);
@@ -291,13 +380,13 @@ test("calculateHarvest expands sample RollerEvilDoctor output into priced childr
   const roller = result.outputs.find((output) => output.itemId === 66);
   assert.equal(roller.chance, 1);
   assert.deepEqual(roller.children.map((child) => [child.itemId, child.expected]), [
-    [61, 0.04], [71, 0.02], [73, 0.04],
+    [61, 0.004], [71, 0.002], [73, 0.004],
   ]);
   assert.deepEqual(roller.children.map((child) => [child.unitPrice, child.revenue]), [
-    [10, 0.4], [20, 0.4], [30, 1.2],
+    [10, 0.04], [20, 0.04], [30, 0.12],
   ]);
-  assert.equal(roller.revenue, 2);
-  assert.equal(result.expectedRevenue, 5);
+  assert.equal(roller.revenue, 0.2);
+  assert.equal(result.expectedRevenue, 3.2);
 });
 
 test("calculateHarvest uses best buy prices for regular result market values", () => {
