@@ -1112,6 +1112,11 @@ tbody tr:last-child td {
   }
 }
 
+.harvest-reward-perks {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
 @media (max-width: 680px) {
   .page-shell {
     width: min(100% - 28px, 1180px);

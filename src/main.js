@@ -22,6 +22,7 @@ const state = {
   harvestCatalog: [],
   prices: new Map(),
   perkIds: new Set(),
+  rewardPerkIds: new Set(),
   selectedMarket: null,
   visibleItemIds: [],
   assumedPrices: new Map(),
@@ -48,7 +49,7 @@ const elements = Object.fromEntries(
     "costFootnote", "purchaseTotal", "purchaseLabel", "ingredientsTitle", "ingredientsBody",
     "missingPriceNote", "coProducts", "directModeButton", "chainModeButton", "chainTree",
     "chainSteps", "chainTreeBody", "chainTreeTitle",
-    "craftModeButton", "harvestModeButton", "harvestOptions",
+    "craftModeButton", "harvestModeButton", "harvestOptions", "rewardPerkList", "craftPerks", "consumptionLabel",
   ].map((id) => [id, document.getElementById(id)]),
 );
 
@@ -168,6 +169,10 @@ async function loadData() {
     elements.liveBadge.title = `Configuration ${config.version || "unversioned"} · prices as of ${dateFormatter.format(new Date(marketplace.server_now_unix_ms))}`;
     populatePerks();
     state.harvestCatalog = extractHarvestCatalog(config);
+    const rewardPerkIds = new Set(state.harvestCatalog.flatMap((receipt) => receipt.rewardPerks.map((perk) => perk.id)));
+    state.rewardPerkIds = new Set([...state.rewardPerkIds].filter((id) => rewardPerkIds.has(id)));
+    populateHarvestPerks({ rewardPerks: [...new Map(state.harvestCatalog
+      .flatMap((receipt) => receipt.rewardPerks).map((perk) => [perk.id, perk])).values()] });
     rebuildCatalog();
     populateCities();
     selectMarket(elements.citySelect.value);
@@ -205,6 +210,7 @@ function recipeUnlockPerks() {
 }
 
 function enabledReceiptIds() {
+  if (state.calculatorMode !== "craft") return [];
   return recipeUnlockPerks()
     .filter((perk) => state.perkIds.has(Number(perk.id)))
     .flatMap((perk) => (perk.effects ?? [])
@@ -401,6 +407,74 @@ function populateHarvestOptions() {
     elements.harvestOptions.append(label);
   });
 
+  populateHarvestShards(receipt, selection);
+}
+
+function populateHarvestShards(receipt, selection) {
+  const available = receipt.shards ?? [];
+  selection.shards = Array.from({ length: receipt.shardSlots ?? 0 }, (_, index) => {
+    const itemId = Number(selection.shards?.[index]);
+    if (!available.some((shard) => shard.itemId === itemId)) return 0;
+    return itemId;
+  });
+  if (!selection.shards.length) return;
+  const heading = document.createElement("span");
+  heading.className = "field-label";
+  heading.textContent = "Shards";
+  elements.harvestOptions.append(heading);
+  selection.shards.forEach((itemId, slotIndex) => {
+    const label = document.createElement("label");
+    label.className = "harvest-option";
+    const title = document.createElement("span");
+    title.textContent = `Shard ${slotIndex + 1}`;
+    const select = document.createElement("select");
+    setOption(select, 0, "None");
+    available.forEach((shard) => {
+      const option = document.createElement("option");
+      option.value = String(shard.itemId);
+      option.textContent = `${itemName(shard.itemId)} · ${formatQuantity(shard.durationSec)} sec`;
+      select.append(option);
+    });
+    select.value = String(itemId);
+    select.addEventListener("change", () => {
+      selection.shards[slotIndex] = Number(select.value);
+      populateHarvestOptions();
+      renderCalculation();
+    });
+    label.append(title, select);
+    elements.harvestOptions.append(label);
+  });
+}
+
+function populateHarvestPerks(receipt) {
+  elements.rewardPerkList.replaceChildren();
+  if (!receipt.rewardPerks?.length) return;
+  const section = document.createElement("div");
+  section.className = "harvest-reward-perks";
+  const heading = document.createElement("span");
+  heading.className = "field-label";
+  heading.textContent = "Reward perks";
+  const hint = document.createElement("p");
+  hint.className = "perk-hint";
+  hint.textContent = "Applies only to matching Harvest receipts and rewards. Reward bonuses and extra rewards only; other perk effects are not included.";
+  const list = document.createElement("div");
+  list.className = "perk-list";
+  for (const perk of receipt.rewardPerks) {
+    const label = document.createElement("label");
+    label.className = "perk-option";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = state.rewardPerkIds.has(perk.id);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) state.rewardPerkIds.add(perk.id);
+      else state.rewardPerkIds.delete(perk.id);
+      renderCalculation();
+    });
+    label.append(checkbox, document.createTextNode(translate(perk.name)));
+    list.append(label);
+  }
+  section.append(heading, hint, list);
+  elements.rewardPerkList.append(section);
 }
 
 function populateRecipes() {
@@ -439,6 +513,10 @@ function renderHarvestChance(output) {
   return `${formatQuantity(output.chance)}% (base ${formatQuantity(output.baseChance)}%)`;
 }
 
+function renderHarvestQuantity(output) {
+  return `${formatQuantity(output.quantity)} (base ${formatQuantity(output.baseQuantity)})`;
+}
+
 function renderItemHeader(recipe, calculation) {
   const item = state.items.get(recipe.outputItemId) ?? {};
   const imageUrl = item.icon_url_large || item.icon_url || recipe.iconUrl;
@@ -470,7 +548,7 @@ function renderHarvestHeader(receipt, calculation) {
   wrapper.className = "harvest-results-table-wrap";
   const table = document.createElement("table");
   table.className = "harvest-results-table";
-  table.innerHTML = "<thead><tr><th>Result item</th><th>Chance<br><span>(effective / base)</span></th><th>Expected<br>quantity</th><th>Market buy<br>unit price</th><th>Assumed price</th><th>Expected sale</th></tr></thead>";
+  table.innerHTML = "<thead><tr><th>Result item</th><th>CHANCE</th><th>QUANTITY</th><th>EXPECTED QUANTITY</th><th>Market buy<br>unit price</th><th>Assumed price</th><th>Expected sale</th></tr></thead>";
   const body = document.createElement("tbody");
   calculation.outputs.forEach((harvestOutput) => {
     const row = document.createElement("tr");
@@ -499,6 +577,7 @@ function renderHarvestHeader(receipt, calculation) {
     const assumedCell = makeHarvestAssumedPriceCell(harvestOutput.itemId);
     for (const text of [
       renderHarvestChance(harvestOutput),
+      renderHarvestQuantity(harvestOutput),
       formatQuantity(harvestOutput.expected),
       isBundleParent ? "—" : formatMoney(harvestOutput.marketUnitPrice),
     ]) {
@@ -519,6 +598,7 @@ function renderHarvestHeader(receipt, calculation) {
       childRow.append(childItemCell);
       for (const text of [
         renderHarvestChance(child),
+        renderHarvestQuantity(child),
         formatQuantity(child.expected),
         formatMoney(child.marketUnitPrice),
       ]) {
@@ -608,7 +688,7 @@ function renderMetrics(calculation) {
     : "based on average output";
 
   if (state.calculatorMode === "harvest") {
-    elements.costFootnote.textContent = "NET RESULT = expected sale value minus material cost. Selectable results split their base chance evenly across checked results. Equipment chance bonuses add together; final chances are capped at 100%. Random rewards use relative weights, and bundles contain the listed quantities. Child chances include the parent chance; children carry the sale value.";
+    elements.costFootnote.textContent = "CHANCE includes selected reward perks and sharing across checked rewards. QUANTITY includes equipment bonuses. EXPECTED QUANTITY estimates the total across your runs. Child chances include the parent chance. NET RESULT is expected sale value minus material cost.";
   } else if (state.costMode === "chain") {
     elements.costFootnote.textContent = "The chain automatically expands craftable ingredients into raw materials and selects the cheapest complete recipe. Quantities use average output and expected consumption after returns.";
   } else {
@@ -669,24 +749,27 @@ function makeIngredientRow(ingredient) {
   });
   assumedPriceCell.append(assumedInput);
 
-  const returnCell = document.createElement("td");
-  returnCell.textContent = state.calculatorMode === "harvest" || ingredient.returnChance
-    ? `${formatQuantity(ingredient.returnChance)}%` : "—";
+  const consumptionCell = document.createElement("td");
+  consumptionCell.textContent = state.calculatorMode === "harvest"
+    ? `${formatQuantity(ingredient.breakChance)}%`
+    : ingredient.returnChance ? `${formatQuantity(ingredient.returnChance)}%` : "—";
   const costCell = document.createElement("td");
   costCell.className = "line-cost";
   costCell.textContent = formatMoney(ingredient.expectedCost);
 
   if (ingredient.unitPrice === null) row.classList.add("has-missing-price");
-  row.append(itemCell, quantityCell, priceCell, assumedPriceCell, returnCell, costCell);
+  row.append(itemCell, quantityCell, priceCell, assumedPriceCell, consumptionCell, costCell);
   return row;
 }
 
 function renderIngredients(calculation) {
+  elements.consumptionLabel.textContent = state.calculatorMode === "harvest" ? "BROKEN" : "Return";
   const rows = state.costMode === "chain" && calculation.rawMaterials
     ? calculation.rawMaterials.map((material) => ({
         itemId: material.itemId,
         quantity: material.quantity,
         returnChance: 0,
+        breakChance: 100,
         marketUnitPrice: material.marketUnitPrice ?? material.unitPrice,
         unitPrice: material.unitPrice,
         expectedCost: material.cost,
@@ -794,6 +877,8 @@ function renderCalculation() {
       state.selectedHarvestResults,
       state.assumedPrices,
       state.items,
+      state.rewardPerkIds,
+      state.harvestSelections.get(receipt.key)?.shards ?? [],
     );
     elements.runsInput.value = String(calculation.runs);
     const chainOutputItemId = calculation.outputs.find((output) => output.selected)?.itemId ?? receipt.results[0]?.itemId;
@@ -823,10 +908,12 @@ function renderCalculation() {
       ? {
           ...calculation,
           ...chainCalculation,
+          expectedCost: calculation.shardDurationComplete === false ? null : chainCalculation.expectedCost,
+          purchaseCost: calculation.shardDurationComplete === false ? null : chainCalculation.purchaseCost,
           expectedRevenue: calculation.expectedRevenue,
           coveredExpectedRevenue: calculation.coveredExpectedRevenue,
           revenueComplete: calculation.revenueComplete,
-          profit: chainCalculation.expectedCost === null || calculation.expectedRevenue === null
+          profit: calculation.shardDurationComplete === false || chainCalculation.expectedCost === null || calculation.expectedRevenue === null
             ? null
             : calculation.expectedRevenue - chainCalculation.expectedCost,
         }
@@ -864,6 +951,8 @@ function setCostMode(mode) {
 function setCalculatorMode(mode) {
   state.calculatorMode = mode === "harvest" ? "harvest" : "craft";
   const isHarvest = state.calculatorMode === "harvest";
+  elements.craftPerks.hidden = isHarvest;
+  elements.rewardPerkList.hidden = !isHarvest;
   elements.craftModeButton.checked = !isHarvest;
   elements.harvestModeButton.checked = isHarvest;
   elements.calculatorTitle.textContent = isHarvest ? "Harvest calculator" : "Crafting calculator";
@@ -890,7 +979,7 @@ function setCalculatorMode(mode) {
   elements.harvestOptions.hidden = !isHarvest;
   state.selectedHarvestResults = new Set();
   state.selectedHarvestCandidates = [];
-  populateItems(elements.itemSearch.value);
+  rebuildCatalog();
   renderCalculation();
 }
 
