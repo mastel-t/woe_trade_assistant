@@ -35,27 +35,20 @@ their expected average values. If a nested recipe cannot be fully calculated
 but its intermediate item is available on the marketplace, the calculator
 uses its marketplace price as a fallback.
 
-Harvest calculations use `runs` directly; `duration_sec` and `max_parallel` are
-not used. Every enabled item-slot candidate can be selected. The candidate
-itself is a material: its quantity is `count * runs`, its return chance is
-`100 - break_percent`, and its expected consumption is quantity multiplied by
-`break_percent / 100` (default 0% break chance, or 100% return). Candidate requirements are
-consumed at 100%. Repeated materials combine their quantities and expected
-consumption, with a quantity-weighted return chance. Harvest material costs
-use expected consumption, including the purchase cost estimate. The materials
-section uses the same `Market / Chain` view as crafting: Market shows the
-aggregated material cost, and Chain recursively expands craftable candidates
-and requirements using the existing craft recipe catalog. Disabled receipts
-and candidates are omitted. Result chances are multiplied by the `lootmore_coef`
-of each selected slot candidate (default 1). Selectable results divide their base
-chance by the number of checked results before applying these multipliers. The
-final chance is capped at 100%; unchecked selectable results have zero chance.
-Expected results use `effective chance / 100 * count * runs`, with
-material costs from `best_sell_price` and harvest revenue from
-`best_buy_price`. Assumed prices can be entered per item ID for both material
-costs and harvest result revenue; they override the corresponding marketplace
-price everywhere that item appears. Missing prices are shown without presenting
-an incomplete total.
+In Harvest mode, choose the characters and equipment for the selected receipt.
+Use the reward perk checkboxes in the header to enable bonuses and extra
+rewards you have unlocked. Each perk applies only to its matching Harvest
+receipts and rewards. Other effects such as speed or material consumption
+are not included.
+
+The reward table separates **CHANCE** (the reward probability), **QUANTITY**
+(the amount per successful reward, including equipment bonuses), and
+**EXPECTED QUANTITY** (the estimated total for the selected number of runs).
+CHANCE and QUANTITY show both the effective value and the base value.
+Select or clear reward checkboxes to choose your target rewards.
+
+Use **Market / Chain** to inspect material costs. Enter an **Assumed price**
+to try a custom material or reward price, or clear it to use the market price.
 
 ## Local setup
 

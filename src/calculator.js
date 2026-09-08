@@ -153,6 +153,54 @@ function normalizeHarvestCandidate(candidate) {
   };
 }
 
+function harvestRewardPerks(config, receipt) {
+  const buildings = (config.buildings ?? []).filter((building) => (
+    building.building_type === "harvest"
+    && [building.child_type_id, ...(building.upgrades ?? []).map((upgrade) => upgrade.child_type_id)]
+      .some((id) => Number(id) === Number(receipt.receipt_id))
+  ));
+  return (config.technology_tree?.nodes ?? []).filter((perk) => !perk.disabled).map((perk) => ({
+    id: Number(perk.id),
+    name: perk.name,
+    effects: (perk.effects ?? []).filter((effect) => {
+      const bonus = effect.Effect?.HarvestResultMult;
+      const addition = effect.Effect?.HarvestAddResult;
+      if (Number(effect.scope) !== 1) return false;
+      if (addition) {
+        if (!(Number(addition.item_id) > 0) || !(Number(addition.count) > 0)
+          || !Number.isFinite(Number(addition.count)) || !Number.isFinite(Number(addition.chance))
+          || Number(addition.chance) < 0) return false;
+      } else if (!bonus || !Number.isFinite(Number(bonus.multiplier))
+        || Number(bonus.multiplier) < 0
+        || !(receipt.result ?? []).some((result) => Number(result.item_id) === Number(bonus.result_item_id))) return false;
+      const target = effect.Target;
+      return buildings.some((building) => {
+        if (target?.BuildingTarget) {
+          const rule = target.BuildingTarget;
+          return Number(rule.building_type_id) === Number(building.id)
+            && (rule.receipt_id == null || Number(rule.receipt_id) === Number(receipt.receipt_id));
+        }
+        const tags = target?.TagTarget;
+        if (!tags?.tags?.length) return false;
+        if (Number(tags.match) === 2) return tags.tags.some((tag) => (building.tags ?? []).includes(tag));
+        if (Number(tags.match) === 1) return tags.tags.every((tag) => (building.tags ?? []).includes(tag));
+        return false;
+      });
+    }).map((effect, index) => effect.Effect.HarvestAddResult ? {
+      kind: "add",
+      key: `${receipt.receipt_id}:perk:${perk.id}:${index}`,
+      itemId: Number(effect.Effect.HarvestAddResult.item_id),
+      count: Number(effect.Effect.HarvestAddResult.count),
+      chance: Number(effect.Effect.HarvestAddResult.chance),
+      selectable: false,
+    } : ({
+      kind: "multiply",
+      itemId: Number(effect.Effect.HarvestResultMult.result_item_id),
+      multiplier: Number(effect.Effect.HarvestResultMult.multiplier),
+    })),
+  })).filter((perk) => Number.isFinite(perk.id) && perk.effects.length);
+}
+
 export function extractHarvestCatalog(config = {}) {
   return (config.harvests ?? [])
     .filter((receipt) => !receipt?.disabled && Number.isFinite(Number(receipt?.receipt_id)))
@@ -160,6 +208,7 @@ export function extractHarvestCatalog(config = {}) {
       key: String(receipt.receipt_id),
       receiptId: Number(receipt.receipt_id),
       receipt,
+      rewardPerks: harvestRewardPerks(config, receipt),
       slots: (receipt.items_slots ?? []).map((slot, index) => ({
         key: `${receipt.receipt_id}:${index}`,
         name: slot.name || `slot_${index + 1}`,
@@ -220,6 +269,7 @@ export function calculateHarvest(
   selectedResultIds = new Set(),
   assumedPrices = new Map(),
   itemIndex = new Map(),
+  selectedPerkIds = new Set(),
 ) {
   const safeRuns = clamp(Math.trunc(asFiniteNumber(runs, 1)), 1, 1_000_000);
   const getMarketBuyPrice = (itemId) => prices.get(Number(itemId))?.buy ?? null;
@@ -273,35 +323,46 @@ export function calculateHarvest(
     return result.selectable && (selectedResultIds.has(key)
       || (selectableResultCount === 1 && selectedResultIds.has(result.itemId)));
   }).length;
-  const outputs = receipt.results.map((result, resultIndex) => {
+  const perkEffects = (receipt.rewardPerks ?? [])
+    .filter((perk) => selectedPerkIds.has(perk.id)).flatMap((perk) => perk.effects);
+  const results = [...receipt.results, ...perkEffects.filter((effect) => effect.kind === "add")];
+  const outputs = results.map((result, resultIndex) => {
     const key = result.key ?? `${receipt.key ?? receipt.receiptId}:${resultIndex}`;
     const selected = !result.selectable || selectedResultIds.has(key)
       || (selectableResultCount === 1 && selectedResultIds.has(result.itemId));
     const sharedChance = result.selectable
       ? checkedSelectableCount > 0 && selected ? result.chance / checkedSelectableCount : 0
       : result.chance;
-    const effectiveChance = clamp(sharedChance * lootmoreCoef, 0, 100);
-    const expected = selected ? effectiveChance / 100 * result.count * safeRuns : 0;
+    const perkMultiplier = perkEffects
+      .filter((effect) => result.kind !== "add" && effect.kind !== "add" && effect.itemId === result.itemId)
+      .reduce((multiplier, effect) => multiplier * effect.multiplier, 1);
+    const effectiveChance = clamp(sharedChance * perkMultiplier, 0, 100);
+    const quantity = result.count * Math.max(0, lootmoreCoef);
+    const expected = selected ? effectiveChance / 100 * quantity * safeRuns : 0;
     const marketUnitPrice = getMarketBuyPrice(result.itemId);
     const unitPrice = getEffectiveBuyPrice(result.itemId, prices, assumedPrices);
-    const children = expandBundle(result.itemId, expected, itemIndex).map((child, childIndex) => {
+    const children = expandBundle(result.itemId, result.count, itemIndex).map((child, childIndex) => {
       const childMarketPrice = getMarketBuyPrice(child.itemId);
       const childPrice = getEffectiveBuyPrice(child.itemId, prices, assumedPrices);
+      const childExpected = effectiveChance / 100 * child.quantity * Math.max(0, lootmoreCoef) * safeRuns;
+      const baseQuantity = child.probability > 0 ? child.quantity / child.probability : 0;
       return {
         type: "bundle-child",
         key: `${key}:child:${childIndex}`,
         itemId: child.itemId,
         parentItemId: child.parentItemId,
-        min: child.quantity,
-        max: child.quantity,
-        expected: child.quantity,
+        min: childExpected,
+        max: childExpected,
+        baseQuantity,
+        quantity: baseQuantity * Math.max(0, lootmoreCoef),
+        expected: childExpected,
         chance: effectiveChance * child.probability,
         baseChance: result.chance * child.probability,
         selectable: result.selectable,
         selected,
         marketUnitPrice: childMarketPrice,
         unitPrice: childPrice,
-        revenue: child.quantity === 0 ? 0 : childPrice === null ? null : child.quantity * childPrice,
+        revenue: childExpected === 0 ? 0 : childPrice === null ? null : childExpected * childPrice,
       };
     });
     const revenue = children.length
@@ -315,6 +376,8 @@ export function calculateHarvest(
       itemId: result.itemId,
       min: expected,
       max: expected,
+      quantity,
+      baseQuantity: result.count,
       expected,
       chance: effectiveChance,
       baseChance: result.chance,

@@ -5,6 +5,35 @@ import test from "node:test";
 const mainSource = await readFile(new URL("../src/main.js", import.meta.url), "utf8");
 const htmlSource = await readFile(new URL("../index.html", import.meta.url), "utf8");
 
+test("Harvest perk checkboxes preserve selections and recalculate without changing Craft perks", () => {
+  const source = mainSource.match(/function populateHarvestPerks\(receipt\) \{[^]*?\n\}/)[0];
+  const makeElement = () => ({ children: [], append(...children) { this.children.push(...children); },
+    replaceChildren() { this.children = []; },
+    addEventListener(event, listener) { this[event] = listener; } });
+  const document = { createElement: makeElement, createTextNode: (text) => text };
+  const state = { rewardPerkIds: new Set([11]), perkIds: new Set([99]) };
+  const elements = { rewardPerkList: makeElement() };
+  let renders = 0;
+  const populate = new Function("document", "state", "elements", "translate", "renderCalculation",
+    `${source}; return populateHarvestPerks;`)(document, state, elements, (name) => name, () => { renders += 1; });
+  const receipt = { rewardPerks: [{ id: 11, name: "Boss slayer" }] };
+  populate(receipt);
+  const checkbox = elements.rewardPerkList.children[0].children[2].children[0].children[0];
+  assert.equal(checkbox.checked, true);
+  checkbox.checked = false;
+  checkbox.change();
+  assert.equal(state.rewardPerkIds.has(11), false);
+  checkbox.checked = true;
+  checkbox.change();
+  assert.equal(state.rewardPerkIds.has(11), true);
+  assert.equal(renders, 2);
+  assert.deepEqual([...state.perkIds], [99]);
+  populate({ rewardPerks: [] });
+  assert.equal(elements.rewardPerkList.children.length, 0);
+  populate(receipt);
+  assert.equal(elements.rewardPerkList.children[0].children[2].children[0].children[0].checked, true);
+});
+
 test("harvest receipt search matches output names and recovers from no matches", () => {
   const population = mainSource.match(/function populateHarvestReceipts\([^]*?\n\}/);
   assert.ok(population, "harvest receipt population function exists");
@@ -113,9 +142,17 @@ test("harvest result display keeps bundle parent amounts separate from child amo
   assert.match(mainSource, /formatMoney\(child\.revenue\)/);
 });
 
-test("harvest result display always shows effective and base chance", () => {
+test("harvest result display separates chance, quantity and expected quantity", () => {
   assert.match(mainSource, /function renderHarvestChance\(output\) \{/);
-  assert.match(mainSource, /return `\$\{formatQuantity\(output\.chance\)\}% \(base \$\{formatQuantity\(output\.baseChance\)\}%\)`;/);
+  const chanceSource = mainSource.match(/function renderHarvestChance\(output\) \{[^]*?\n\}/)[0];
+  const quantitySource = mainSource.match(/function renderHarvestQuantity\(output\) \{[^]*?\n\}/)[0];
+  const [chance, quantity] = new Function("formatQuantity", `${chanceSource}; ${quantitySource}; return [renderHarvestChance, renderHarvestQuantity];`)(String);
+  const output = { chance: 1.1, baseChance: 1, quantity: 4, baseQuantity: 1 };
+  assert.equal(chance(output), "1.1% (base 1%)");
+  assert.equal(quantity(output), "4 (base 1)");
+  assert.match(mainSource, /<th>CHANCE<\/th><th>QUANTITY<\/th><th>EXPECTED QUANTITY<\/th>/);
+  assert.match(mainSource, /renderHarvestQuantity\(harvestOutput\)/);
+  assert.match(mainSource, /renderHarvestQuantity\(child\)/);
   assert.doesNotMatch(mainSource, /baseChance === .*chance/);
 });
 

@@ -18,7 +18,91 @@ import {
 
 const sampleConfig = JSON.parse(await readFile(new URL("../sample/configs.json", import.meta.url), "utf8"));
 
-test("calculateHarvest adds equipment increases and reductions before capping each drop", () => {
+test("Harvest reward perks match specific recipes, upgrades, tags and reward items", () => {
+  const catalog = extractHarvestCatalog(sampleConfig);
+  for (const id of [18, 23]) {
+    const receipt = catalog.find((entry) => entry.receiptId === id);
+    assert.ok(receipt.rewardPerks.some((perk) => perk.id === 11));
+    assert.ok(receipt.rewardPerks.some((perk) => perk.id === 10));
+    assert.ok(!receipt.rewardPerks.some((perk) => perk.id === 30));
+  }
+  for (const id of [2, 9, 7, 41]) {
+    const receipt = catalog.find((entry) => entry.receiptId === id);
+    assert.ok(receipt.rewardPerks.some((perk) => perk.id === 30));
+    assert.ok(!receipt.rewardPerks.some((perk) => perk.id === 11));
+  }
+  const abyss = catalog.find((entry) => entry.receiptId === 23);
+  const calculate = (perks) => calculateHarvest(abyss, 1, new Map(), [2, 2, 1],
+    new Set(["23:1"]), new Map(), createItemIndex(sampleConfig.items), new Set(perks));
+  const doctor = calculate([11]).outputs.find((output) => output.itemId === 66);
+  assert.equal(doctor.chance, 1.1);
+  assert.equal(doctor.quantity, 4);
+  assert.ok(Math.abs(doctor.expected - 0.044) < 1e-12);
+  assert.deepEqual(doctor.children.map((child) => child.quantity), [4, 4, 4]);
+  assert.ok(Math.abs(doctor.children[0].chance - 0.44) < 1e-12);
+  assert.ok(Math.abs(doctor.children[0].expected - 0.0176) < 1e-12);
+  assert.equal(calculate([]).outputs.find((output) => output.itemId === 66).chance, 1);
+  assert.equal(calculate([30]).outputs.find((output) => output.itemId === 66).chance, 1);
+  assert.equal(calculate([11]).outputs.find((output) => output.itemId === 73).chance, 15);
+  const fishing = catalog.find((entry) => entry.receiptId === 2);
+  const water = calculateHarvest(fishing, 1, new Map(), [], new Set(), new Map(), new Map(),
+    new Set([26, 30])).outputs.find((output) => output.itemId === 2);
+  assert.ok(Math.abs(water.chance - water.baseChance * 1.5) < 1e-12);
+});
+
+test("Harvest added rewards obey receipt targets and do not multiply the added chance again", () => {
+  const catalog = extractHarvestCatalog(sampleConfig);
+  const calculate = (id, perks) => calculateHarvest(catalog.find((receipt) => receipt.receiptId === id),
+    1, new Map([[47, { buy: 100 }], [53, { buy: 10 }], [2, { buy: 5 }]]), [], new Set(), new Map(),
+    createItemIndex(sampleConfig.items), new Set(perks));
+  for (const [id, chances] of [[18, [2, 5]], [23, [7, 7]]]) {
+    const off = calculate(id, []);
+    const on = calculate(id, [10]);
+    const extras = on.outputs.filter((output) => output.key.includes(":perk:"));
+    assert.deepEqual(extras.map((output) => output.itemId), [47, 53]);
+    assert.deepEqual(extras.map((output) => output.chance), chances);
+    assert.deepEqual(extras.map((output) => output.baseChance), chances);
+    assert.deepEqual(extras.map((output) => output.baseQuantity), [1, 1]);
+    assert.ok(Math.abs(extras[0].revenue - chances[0]) < 1e-12);
+    assert.equal(off.outputs.length + 2, on.outputs.length);
+  }
+  for (const [id, count, chance] of [[2, 3, 100], [9, 4, 100], [7, 5, 100], [41, 15, 85]]) {
+    const extra = calculate(id, [6]).outputs.find((output) => output.key.includes(":perk:"));
+    assert.equal(extra.itemId, 2);
+    assert.equal(extra.baseQuantity, count);
+    assert.equal(extra.baseChance, chance);
+    assert.equal(extra.chance, chance);
+  }
+  assert.equal(calculate(23, [6]).outputs.some((output) => output.key.includes(":perk:")), false);
+  const duplicates = calculate(2, [6]).outputs.filter((output) => output.itemId === 2);
+  assert.equal(duplicates.length, 2);
+  assert.equal(new Set(duplicates.map((output) => output.key)).size, 2);
+  const goldfish = calculate(2, [15]).outputs.find((output) => output.itemId === 87);
+  assert.deepEqual(goldfish.children.map((child) => child.itemId), [59, 58]);
+  assert.deepEqual(goldfish.children.map((child) => child.baseQuantity), [1, 1]);
+  assert.ok(Math.abs(goldfish.children[0].expected - 0.00009) < 1e-12);
+});
+
+test("Harvest perk matching excludes other receipts and invalid or unrelated effects", () => {
+  const bonus = { scope: 1, Target: { BuildingTarget: { building_type_id: 90, receipt_id: 2 } },
+    Effect: { HarvestResultMult: { result_item_id: 5, multiplier: 1.2 } } };
+  const catalog = extractHarvestCatalog({
+    buildings: [{ id: 90, building_type: "harvest", child_type_id: 1,
+      upgrades: [{ child_type_id: 2 }], tags: ["gathering"] }],
+    harvests: [1, 2, 90].map((receipt_id) => ({ receipt_id,
+      result: [{ item_id: 5, count: 1, chance_percent: 20 }] })),
+    technology_tree: { nodes: [
+      { id: 1, effects: [bonus] },
+      { id: 2, disabled: true, effects: [bonus] },
+      { id: 3, effects: [{ ...bonus, scope: 2 }] },
+      { id: 4, effects: [{ ...bonus, Target: {} }] },
+      { id: 5, effects: [{ ...bonus, Effect: { HarvestSpeedMult: { multiplier: 2 } } }] },
+    ] },
+  });
+  assert.deepEqual(catalog.map((receipt) => receipt.rewardPerks.map((perk) => perk.id)), [[], [1], []]);
+});
+
+test("calculateHarvest adds equipment bonuses to quantity without changing chance", () => {
   const calculate = (coefficients) => calculateHarvest({
     receiptId: 90,
     slots: coefficients.map((lootmoreCoef, index) => ({ candidates: [{
@@ -28,19 +112,20 @@ test("calculateHarvest adds equipment increases and reductions before capping ea
   }, 3, new Map([[100, { buy: 10 }]]));
 
   const result = calculate([2.5, 1.5, 2]);
-  assert.deepEqual(result.outputs.map((output) => output.chance), [40, 100]);
+  assert.deepEqual(result.outputs.map((output) => output.chance), [10, 40]);
+  assert.deepEqual(result.outputs.map((output) => output.quantity), [8, 8]);
   assert.ok(Math.abs(result.outputs[0].expected - 2.4) < 1e-12);
-  assert.equal(result.expectedRevenue, 84);
-  assert.deepEqual(calculate([0.5, 2]).outputs.map((output) => output.chance), [15, 60]);
-  assert.deepEqual(calculate([0.5, 0.5, 0.5]).outputs.map((output) => output.chance), [0, 0]);
+  assert.ok(Math.abs(result.expectedRevenue - 120) < 1e-12);
+  assert.deepEqual(calculate([0.5, 2]).outputs.map((output) => output.quantity), [3, 3]);
+  assert.deepEqual(calculate([0.5, 0.5, 0.5]).outputs.map((output) => output.expected), [0, 0]);
 });
 
 test("calculateHarvest normalizes the actual Abyss healer and cannibal rewards", () => {
   const receipt = extractHarvestCatalog(sampleConfig).find((entry) => entry.receiptId === 23);
   const itemIndex = createItemIndex(sampleConfig.items);
   for (const [key, itemId, chance, childIds, expected, probabilities] of [
-    ["23:1", 66, 4, [61, 71, 73], [0.016, 0.008, 0.016], [0.4, 0.2, 0.4]],
-    ["23:3", 68, 28, [42, 9, 22], [0.014, 0.112, 0.154], [0.05, 0.4, 0.55]],
+    ["23:1", 66, 1, [61, 71, 73], [0.016, 0.008, 0.016], [0.4, 0.2, 0.4]],
+    ["23:3", 68, 7, [42, 9, 22], [0.014, 0.112, 0.154], [0.05, 0.4, 0.55]],
   ]) {
     const output = calculateHarvest(receipt, 1, new Map(), [2, 2, 1],
       new Set([key]), new Map(), itemIndex).outputs.find((entry) => entry.itemId === itemId);
@@ -130,7 +215,7 @@ test("extractHarvestCatalog excludes disabled receipts and candidates", () => {
   assert.equal(catalog[0].slots[0].candidates[0].lootmoreCoef, 1);
 });
 
-test("calculateHarvest applies sample receipt 42 Mecha Cart bonus with a 100% cap", () => {
+test("calculateHarvest applies sample receipt 42 Mecha Cart bonus to amounts", () => {
   const receipt = extractHarvestCatalog(sampleConfig).find((entry) => entry.receiptId === 42);
   const selectedCandidates = receipt.slots.map((slot) => {
     const cartIndex = slot.candidates.findIndex((candidate) => candidate.itemId === 106);
@@ -144,9 +229,10 @@ test("calculateHarvest applies sample receipt 42 Mecha Cart bonus with a 100% ca
 
   assert.deepEqual(ordinary.outputs.map((output) => output.chance), [65, 0.25, 65]);
   assert.deepEqual(result.outputs.map((output) => output.baseChance), [65, 0.25, 65]);
-  assert.deepEqual(result.outputs.map((output) => output.chance), [100, 0.4375, 100]);
-  assert.deepEqual(result.outputs.map((output) => output.expected), [6, 0.00875, 6]);
-  assert.equal(result.expectedRevenue, 180.875);
+  assert.deepEqual(result.outputs.map((output) => output.chance), [65, 0.25, 65]);
+  assert.deepEqual(result.outputs.map((output) => output.quantity), [5.25, 1.75, 5.25]);
+  assert.deepEqual(result.outputs.map((output) => output.expected), [6.825, 0.00875, 6.825]);
+  assert.ok(Math.abs(result.expectedRevenue - 205.625) < 1e-12);
 });
 
 test("calculateHarvest combines selected slot bonuses after selectable sharing and propagates bundle revenue", () => {
@@ -171,10 +257,10 @@ test("calculateHarvest combines selected slot bonuses after selectable sharing a
   const itemIndex = new Map([[143, { bundle: "107x3" }]]);
   const result = calculateHarvest(receipt, 2, prices, [0, 1], new Set(["90:0", "90:1"]), new Map(), itemIndex);
 
-  assert.deepEqual(result.outputs.map((output) => output.chance), [75, 100, 0, 0]);
+  assert.deepEqual(result.outputs.map((output) => output.chance), [30, 40, 0, 0]);
   assert.equal(result.outputs[0].baseChance, 60);
   assert.equal(result.outputs[0].expected, 3);
-  assert.equal(result.outputs[0].children[0].chance, 75);
+  assert.equal(result.outputs[0].children[0].chance, 30);
   assert.equal(result.outputs[0].children[0].expected, 9);
   assert.equal(result.outputs[1].expected, 2);
   assert.equal(result.outputs[2].expected, 0);
@@ -182,7 +268,7 @@ test("calculateHarvest combines selected slot bonuses after selectable sharing a
   assert.equal(result.expectedRevenue, 100);
 
   const fallback = calculateHarvest(receipt, 1, prices, [99, 99], new Set(["90:0", "90:1"]), new Map(), itemIndex);
-  assert.deepEqual(fallback.outputs.map((output) => output.chance), [45, 60, 0, 0]);
+  assert.deepEqual(fallback.outputs.map((output) => output.chance), [30, 40, 0, 0]);
   const unchecked = calculateHarvest(receipt, 1, prices, [0, 1], new Set(), new Map(), itemIndex);
   assert.deepEqual(unchecked.outputs.map((output) => output.chance), [0, 0, 0, 0]);
   assert.equal(unchecked.expectedRevenue, 0);
