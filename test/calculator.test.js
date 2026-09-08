@@ -18,6 +18,158 @@ import {
 
 const sampleConfig = JSON.parse(await readFile(new URL("../sample/configs.json", import.meta.url), "utf8"));
 
+test("Harvest damage above 100 percent consumes extra equipment in Market and Chain", () => {
+  const [receipt] = extractHarvestCatalog({ harvests: [{ receipt_id: 90, duration_sec: 100,
+    shards: { slots: 1, allowed_tags: ["death"], tag_match: "any" },
+    items_slots: [{ available_items: [{ item_id: 1, count: 3, break_percent: 200 }] }],
+    result: [{ item_id: 2, count: 1, chance_percent: 100 }],
+  }], shards: [{ item_id: 3, duration_sec: 100, tags: ["death"], effects: [
+    { scope: "harvest", effect: { kind: "harvest_break_chance_mult", multiplier: 2 } },
+  ] }] });
+  const prices = new Map([[1, { sell: 5 }], [2, { buy: 10 }], [3, { sell: 2 }]]);
+  const base = calculateHarvest(receipt, 2, prices);
+  assert.equal(receipt.slots[0].candidates[0].breakChance, 200);
+  assert.equal(base.ingredients[0].quantity, 6);
+  assert.equal(base.ingredients[0].returnChance, -100);
+  assert.equal(base.ingredients[0].breakChance, 200);
+  assert.equal(base.ingredients[0].expectedConsumed, 12);
+  assert.equal(base.expectedCost, 60);
+  const boosted = calculateHarvest(receipt, 2, prices, [], new Set(), new Map(), new Map(), new Set(), [3]);
+  assert.equal(boosted.ingredients[0].returnChance, -300);
+  assert.equal(boosted.ingredients[0].breakChance, 400);
+  assert.equal(boosted.ingredients[0].expectedConsumed, 24);
+  assert.equal(boosted.ingredients[1].returnChance, 0);
+  assert.equal(boosted.ingredients[1].breakChance, 100);
+  assert.equal(boosted.ingredients[1].quantity, 2);
+  assert.equal(boosted.expectedCost, 124);
+  const output = { itemId: 2, expected: 1, min: 1, max: 1 };
+  const directDamageIngredients = boosted.ingredients.map(({ returnChance, baseReturnChance, ...ingredient }) => ingredient);
+  const chain = calculateCraftChain({ outputItemId: 2, ingredients: directDamageIngredients,
+    outputs: [output], selectedOutput: output }, 1, prices, new Map());
+  assert.equal(chain.expectedCost, 124);
+  const direct = calculateRecipe({ outputItemId: 2, ingredients: directDamageIngredients,
+    outputs: [output], selectedOutput: output }, 1, prices);
+  assert.equal(direct.expectedCost, 124);
+});
+
+test("Harvest shards combine time, quantity and generic targeted break deltas", () => {
+  const config = {
+    harvests: [{ receipt_id: 1, duration_sec: 600,
+      shards: { slots: 2, allowed_tags: ["test"], tag_match: "any" },
+      items_slots: [{ available_items: [{ item_id: 1, count: 1, break_percent: 10,
+        speed_coef: 2, lootmore_coef: 2, requirements: [{ item_id: 3, count: 2 }] }] },
+      { available_items: [{ item_id: 2, count: 1, break_percent: 0, speed_coef: 1.5 }] }],
+      result: [{ item_id: 4, count: 2, chance_percent: 50 }] }],
+    shards: [{ item_id: 900, name: "future_shard", duration_sec: 120, tags: ["test"],
+      effects: [
+        { kind: "harvest_speed_mult", multiplier: 2 },
+        { kind: "harvest_result_mult", multiplier: 1.5 },
+        { kind: "harvest_break_chance_mult", multiplier: 1.45, tool_item_ids: [1] },
+        { kind: "harvest_break_chance_delta", delta_percent_points: 0.01 },
+        { kind: "harvest_add_result", item_id: 5, count: 3, chance: 20 },
+      ].map((effect) => ({ scope: "harvest", effect })) }],
+  };
+  const [receipt] = extractHarvestCatalog(config);
+  const prices = new Map([1, 2, 3, 4, 5, 900].map((id) => [id, { buy: 10, sell: 10 }]));
+  const calculate = (shards) => calculateHarvest(receipt, 2, prices, [], new Set(), new Map(),
+    new Map(), new Set(), shards);
+  const result = calculate([900]);
+  assert.equal(result.durationSec, 120);
+  const material = (id) => result.ingredients.find((entry) => entry.itemId === id);
+  assert.equal(material(900).quantity, 2);
+  assert.equal(material(900).returnChance, 0);
+  assert.ok(Math.abs(material(1).returnChance - 85.4855) < 1e-10);
+  assert.ok(Math.abs(material(2).returnChance - 99.99) < 1e-10);
+  assert.equal(material(3).returnChance, 0);
+  assert.equal(result.outputs[0].baseQuantity, 2);
+  assert.equal(result.outputs[0].quantity, 6);
+  assert.equal(result.outputs[0].chance, 50);
+  assert.equal(result.outputs[0].expected, 6);
+  assert.equal(result.outputs[1].quantity, 9);
+  assert.ok(Math.abs(result.outputs[1].expected - 3.6) < 1e-10);
+  assert.equal(result.expectedRevenue, 96);
+  const duplicates = calculate([900, 900]);
+  assert.equal(duplicates.durationSec, 60);
+  const duplicateMaterial = (id) => duplicates.ingredients.find((entry) => entry.itemId === id);
+  assert.equal(duplicates.ingredients.filter((entry) => entry.itemId === 900).length, 1);
+  assert.equal(duplicateMaterial(900).quantity, 2);
+  assert.equal(duplicateMaterial(900).baseQuantity, 20);
+  assert.equal(duplicateMaterial(900).returnChance, 0);
+  assert.ok(Math.abs(duplicateMaterial(1).returnChance - (100 - 10.02 * 1.9)) < 1e-10);
+  assert.ok(Math.abs(duplicateMaterial(2).returnChance - 99.98) < 1e-10);
+  assert.equal(duplicates.outputs[0].quantity, 8);
+  assert.equal(duplicates.outputs[0].expected, 8);
+  assert.equal(duplicates.outputs.length, 3);
+  for (const output of duplicates.outputs.slice(1)) {
+    assert.equal(output.quantity, 12);
+    assert.ok(Math.abs(output.expected - 4.8) < 1e-10);
+  }
+  assert.equal(new Set(duplicates.outputs.map((output) => output.key)).size, 3);
+  assert.ok(Math.abs(duplicates.expectedRevenue - 176) < 1e-10);
+  assert.ok(Math.abs(duplicates.expectedCost - (40 + 20 + 2 * 10.02 / 100 * 1.9 * 10
+    + 2 * 0.02 / 100 * 10)) < 1e-10);
+  assert.deepEqual(calculate([900, 900, 900]), duplicates);
+  assert.equal(calculate([0, 900]).outputs[1].key, duplicates.outputs[2].key);
+  assert.equal(calculate([0, 0, 900]).outputs.length, 1);
+  assert.equal(calculate([12345]).outputs.length, 1);
+  assert.equal(calculate([]).outputs[0].quantity, 4);
+  const missingTime = calculateHarvest({ ...receipt, receipt: {} }, 1, prices, [], new Set(),
+    new Map(), new Map(), new Set(), [900]);
+  assert.equal(missingTime.shardDurationComplete, false);
+  assert.equal(missingTime.expectedCost, null);
+  assert.equal(missingTime.profit, null);
+  assert.ok(missingTime.ingredients.every((entry) => Number.isFinite(entry.quantity)));
+  config.shards[0].duration_sec = 0;
+  assert.equal(extractHarvestCatalog(config)[0].shards.length, 0);
+  config.shards[0].duration_sec = 120;
+  config.harvests[0].shards.allowed_tags = ["test", "other"];
+  config.harvests[0].shards.tag_match = "all";
+  assert.equal(extractHarvestCatalog(config)[0].shards.length, 0);
+  config.harvests[0].shards.tag_match = "any";
+  assert.equal(extractHarvestCatalog(config)[0].shards.length, 1);
+});
+
+test("Receipt 6 with two toxic mushroom shards has 190.04 percent displayed damage", () => {
+  const receipt = extractHarvestCatalog(sampleConfig).find((entry) => entry.receiptId === 6);
+  const candidates = receipt.slots.map((slot) => Math.max(0, slot.candidates.findIndex((candidate) => candidate.itemId === 22)));
+  const result = calculateHarvest(receipt, 1, new Map([[22, { sell: 10 }]]), candidates,
+    new Set(), new Map(), new Map(), new Set(), [129, 129]);
+  const material = result.ingredients.find((entry) => entry.itemId === 22);
+  assert.ok(Math.abs(material.breakChance - 190.038) < 1e-10);
+  assert.equal(material.breakChance.toFixed(2), "190.04");
+  assert.ok(Math.abs(material.expectedConsumed - 1.90038) < 1e-10);
+  assert.ok(Math.abs(material.expectedCost - 19.0038) < 1e-10);
+  const withoutShards = calculateHarvest(receipt, 1, new Map(), candidates);
+  result.outputs.forEach((output, index) => {
+    assert.ok(Math.abs(output.quantity - withoutShards.outputs[index].quantity * 3) < 1e-10);
+    assert.equal(output.chance, withoutShards.outputs[index].chance);
+  });
+});
+
+test("Harvest sample shards respect tool targets, fixed deltas and fractional consumption", () => {
+  const receipt = extractHarvestCatalog(sampleConfig).find((entry) => entry.receiptId === 23);
+  const calculate = (ids) => calculateHarvest(receipt, 1, new Map(), [2, 2, 1],
+    new Set(["23:1"]), new Map(), createItemIndex(sampleConfig.items), new Set(), ids);
+  const base = calculate([]);
+  const toxic = calculate([129]);
+  assert.ok(toxic.ingredients.some((entry) => entry.itemId === 129));
+  assert.ok(Math.abs(toxic.durationSec - base.durationSec / 0.8) < 1e-10);
+  assert.ok(Math.abs(toxic.ingredients.find((entry) => entry.itemId === 129).quantity
+    - toxic.durationSec / 900) < 1e-10);
+  assert.ok(Math.abs(toxic.ingredients.find((entry) => entry.itemId === 162).returnChance
+    - 99.9855) < 1e-10);
+  assert.equal(toxic.outputs[1].quantity, base.outputs[1].quantity * 2);
+  assert.equal(toxic.outputs[1].children[0].quantity, base.outputs[1].children[0].quantity * 2);
+  const potion = calculate([73]);
+  const targets = sampleConfig.shards.find((shard) => shard.item_id === 73).effects[0].effect.tool_item_ids;
+  receipt.slots.forEach((slot, index) => {
+    const candidate = slot.candidates[[2, 2, 1][index]];
+    const material = potion.ingredients.find((entry) => entry.itemId === candidate.itemId);
+    const expectedBreak = candidate.breakChance * (targets.includes(candidate.itemId) ? 0.8 : 1);
+    assert.ok(Math.abs(material.returnChance - (100 - expectedBreak)) < 1e-10);
+  });
+});
+
 test("Harvest reward perks match specific recipes, upgrades, tags and reward items", () => {
   const catalog = extractHarvestCatalog(sampleConfig);
   for (const id of [18, 23]) {

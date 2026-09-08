@@ -110,12 +110,14 @@
             </div>
 
             <div class="perk-controls">
-              <div class="perk-heading">
-                <span class="field-label">Acquired perks</span>
-                <span class="perk-hint">Unlock recipe prices</span>
+              <div id="craftPerks">
+                <div class="perk-heading">
+                  <span class="field-label">Acquired perks</span>
+                  <span class="perk-hint">Unlock recipe prices</span>
+                </div>
+                <div class="perk-list" id="perkList"></div>
               </div>
-              <div class="perk-list" id="perkList"></div>
-              <div id="rewardPerkList"></div>
+              <div id="rewardPerkList" hidden></div>
             </div>
             <div class="harvest-options" id="harvestOptions" hidden></div>
           </div>
@@ -209,7 +211,7 @@
                       <th>Quantity</th>
                       <th>Market price</th>
                       <th>Assumed price</th>
-                      <th>Return</th>
+                      <th id="consumptionLabel">Return</th>
                       <th>Cost</th>
                     </tr>
                   </thead>

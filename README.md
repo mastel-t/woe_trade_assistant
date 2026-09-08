@@ -36,8 +36,16 @@ but its intermediate item is available on the marketplace, the calculator
 uses its marketplace price as a fallback.
 
 In Harvest mode, choose the characters and equipment for the selected receipt.
+Choose **Shards** in the same section, or select **None** to remove one.
+The available choices and slots depend on the receipt. The same shard can be
+selected in multiple slots. Selected shards appear
+in the material list with estimated consumption and update the affected
+material damage and rewards. Experience bonuses are not shown in this calculator.
+In Harvest materials, **BROKEN** shows the consumed percentage: 0% means no
+consumption, 100% means the listed quantity, and 200% means twice that quantity.
 Use the reward perk checkboxes in the header to enable bonuses and extra
-rewards you have unlocked. Each perk applies only to its matching Harvest
+rewards in Harvest mode. Craft mode shows only the acquired recipe perks.
+Choose the perks you have unlocked. Each reward perk applies only to its matching Harvest
 receipts and rewards. Other effects such as speed or material consumption
 are not included.
 

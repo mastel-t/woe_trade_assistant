@@ -5,6 +5,12 @@ const asFiniteNumber = (value, fallback = 0) => {
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
+function consumedFraction(ingredient) {
+  return ingredient.breakChance !== undefined
+    ? Math.max(0, asFiniteNumber(ingredient.breakChance)) / 100
+    : 1 - asFiniteNumber(ingredient.returnChance) / 100;
+}
+
 export function effectiveReturnChance(ingredient) {
   if (ingredient?.return_chance_percent !== undefined && ingredient?.return_chance_percent !== null) {
     return clamp(asFiniteNumber(ingredient.return_chance_percent), 0, 100);
@@ -138,12 +144,13 @@ export function extractCraftCatalog(config = {}, options = {}) {
 function normalizeHarvestCandidate(candidate) {
   const breakChance = candidate?.break_percent === undefined
     ? 0
-    : clamp(asFiniteNumber(candidate.break_percent), 0, 100);
+    : Math.max(0, asFiniteNumber(candidate.break_percent));
   return {
     itemId: asFiniteNumber(candidate?.item_id),
     count: Math.max(0, asFiniteNumber(candidate?.count, 1)),
     breakChance,
     lootmoreCoef: Math.max(0, asFiniteNumber(candidate?.lootmore_coef ?? 1, 1)),
+    speedCoef: Math.max(0, asFiniteNumber(candidate?.speed_coef ?? 1, 1)),
     requirements: (candidate?.requirements ?? [])
       .map((requirement) => ({
         itemId: asFiniteNumber(requirement?.item_id),
@@ -201,6 +208,24 @@ function harvestRewardPerks(config, receipt) {
   })).filter((perk) => Number.isFinite(perk.id) && perk.effects.length);
 }
 
+function harvestShards(config, receipt) {
+  const rule = receipt.shards;
+  if (!(Number(rule?.slots) > 0)) return [];
+  const allowed = rule.allowed_tags ?? [];
+  return (config.shards ?? []).filter((shard) => {
+    if (shard.disabled || !(Number(shard.item_id) > 0)
+      || !(Number(shard.duration_sec) > 0) || !Number.isFinite(Number(shard.duration_sec))) return false;
+    if (!allowed.length) return false;
+    if (rule.tag_match === "all") return allowed.every((tag) => (shard.tags ?? []).includes(tag));
+    return rule.tag_match === "any" && allowed.some((tag) => (shard.tags ?? []).includes(tag));
+  }).map((shard) => ({
+    itemId: Number(shard.item_id), key: shard.key, name: shard.name,
+    durationSec: Number(shard.duration_sec),
+    effects: (shard.effects ?? []).filter((entry) => entry.scope === "harvest")
+      .map((entry) => entry.effect).filter(Boolean),
+  }));
+}
+
 export function extractHarvestCatalog(config = {}) {
   return (config.harvests ?? [])
     .filter((receipt) => !receipt?.disabled && Number.isFinite(Number(receipt?.receipt_id)))
@@ -209,6 +234,8 @@ export function extractHarvestCatalog(config = {}) {
       receiptId: Number(receipt.receipt_id),
       receipt,
       rewardPerks: harvestRewardPerks(config, receipt),
+      shardSlots: Math.max(0, Math.trunc(asFiniteNumber(receipt.shards?.slots))),
+      shards: harvestShards(config, receipt),
       slots: (receipt.items_slots ?? []).map((slot, index) => ({
         key: `${receipt.receipt_id}:${index}`,
         name: slot.name || `slot_${index + 1}`,
@@ -270,35 +297,73 @@ export function calculateHarvest(
   assumedPrices = new Map(),
   itemIndex = new Map(),
   selectedPerkIds = new Set(),
+  selectedShardIds = [],
 ) {
   const safeRuns = clamp(Math.trunc(asFiniteNumber(runs, 1)), 1, 1_000_000);
   const getMarketBuyPrice = (itemId) => prices.get(Number(itemId))?.buy ?? null;
   const ingredients = [];
-  const addIngredient = (itemId, quantity, consumedFraction = 1) => {
+  const addIngredient = (itemId, quantity, consumedFraction = 1, baseQuantity = quantity,
+    baseConsumedFraction = consumedFraction) => {
     if (itemId <= 0 || quantity <= 0) return;
     const expectedConsumed = quantity * consumedFraction;
     const existing = ingredients.find((ingredient) => ingredient.itemId === itemId);
     if (existing) {
       existing.quantity += quantity;
       existing.expectedConsumed += expectedConsumed;
-    } else ingredients.push({ itemId, quantity, expectedConsumed });
+      existing.baseQuantity += baseQuantity;
+      existing.baseExpectedConsumed += baseQuantity * baseConsumedFraction;
+    } else ingredients.push({ itemId, quantity, expectedConsumed, baseQuantity,
+      baseExpectedConsumed: baseQuantity * baseConsumedFraction });
   };
 
+  const selectedShards = selectedShardIds.slice(0, receipt.shardSlots ?? 0)
+    .map((id, slotIndex) => {
+      const shard = (receipt.shards ?? []).find((entry) => entry.itemId === Number(id));
+      return shard ? { ...shard, slotIndex } : null;
+    })
+    .filter((shard) => shard && Number.isFinite(shard.durationSec) && shard.durationSec > 0);
+  const shardEffects = selectedShards.flatMap((shard) => shard.effects);
+  const multiplierFor = (kind, effects = shardEffects) => effects.filter((effect) => effect.kind === kind)
+    .reduce((product, effect) => product * Math.max(0, asFiniteNumber(effect.multiplier, 1)), 1);
   let lootmoreCoef = 1;
+  let speedCoef = 1;
   receipt.slots.forEach((slot, slotIndex) => {
     const candidateIndex = Number(selectedCandidates[slotIndex]);
     const candidate = slot.candidates[candidateIndex] ?? slot.candidates[0];
     if (!candidate) return;
     lootmoreCoef += (candidate.lootmoreCoef ?? 1) - 1;
-    addIngredient(candidate.itemId, candidate.count * safeRuns, candidate.breakChance / 100);
+    speedCoef += (candidate.speedCoef ?? 1) - 1;
+    const effects = shardEffects.filter((effect) => !effect.tool_item_ids?.length
+      || effect.tool_item_ids.map(Number).includes(candidate.itemId));
+    const delta = effects.filter((effect) => effect.kind === "harvest_break_chance_delta")
+      .reduce((sum, effect) => sum + asFiniteNumber(effect.delta_percent_points), 0);
+    const breakMultiplier = Math.max(0, effects
+      .filter((effect) => effect.kind === "harvest_break_chance_mult")
+      .reduce((sum, effect) => sum + Math.max(0, asFiniteNumber(effect.multiplier, 1)) - 1, 1));
+    const breakChance = Math.max(0, (candidate.breakChance + delta)
+      * breakMultiplier);
+    addIngredient(candidate.itemId, candidate.count * safeRuns, breakChance / 100,
+      candidate.count * safeRuns, candidate.breakChance / 100);
     candidate.requirements.forEach((requirement) => {
       addIngredient(requirement.itemId, requirement.quantity * safeRuns);
     });
   });
+  const baseDurationSec = Math.max(0, asFiniteNumber(receipt.receipt?.duration_sec));
+  const effectiveSpeed = speedCoef * multiplierFor("harvest_speed_mult");
+  const durationSec = baseDurationSec > 0 && effectiveSpeed > 0
+    && Number.isFinite(effectiveSpeed) ? baseDurationSec / effectiveSpeed : null;
+  selectedShards.forEach((shard) => {
+    if (durationSec !== null) addIngredient(shard.itemId, durationSec / shard.durationSec * safeRuns,
+      1, baseDurationSec / shard.durationSec * safeRuns, 1);
+  });
+  const rewardMultiplier = Math.max(0, shardEffects
+    .filter((effect) => effect.kind === "harvest_result_mult")
+    .reduce((sum, effect) => sum + Math.max(0, asFiniteNumber(effect.multiplier, 1)) - 1, 1));
+  lootmoreCoef = Math.max(0, lootmoreCoef) * rewardMultiplier;
 
   let expectedCost = 0;
   let purchaseCost = 0;
-  let costComplete = true;
+  let costComplete = !selectedShards.length || durationSec !== null;
   const calculatedIngredients = ingredients.map((ingredient) => {
     const marketUnitPrice = prices.get(ingredient.itemId)?.sell ?? null;
     const unitPrice = getEffectiveSellPrice(ingredient.itemId, prices, assumedPrices);
@@ -309,7 +374,10 @@ export function calculateHarvest(
     if (lineCost !== null) purchaseCost += lineCost;
     return {
       ...ingredient,
+      breakChance: 100 * ingredient.expectedConsumed / ingredient.quantity,
+      baseBreakChance: 100 * ingredient.baseExpectedConsumed / ingredient.baseQuantity,
       returnChance: 100 * (1 - ingredient.expectedConsumed / ingredient.quantity),
+      baseReturnChance: 100 * (1 - ingredient.baseExpectedConsumed / ingredient.baseQuantity),
       marketUnitPrice,
       unitPrice,
       expectedCost: lineCost,
@@ -325,7 +393,14 @@ export function calculateHarvest(
   }).length;
   const perkEffects = (receipt.rewardPerks ?? [])
     .filter((perk) => selectedPerkIds.has(perk.id)).flatMap((perk) => perk.effects);
-  const results = [...receipt.results, ...perkEffects.filter((effect) => effect.kind === "add")];
+  const shardResults = selectedShards.flatMap((shard) => shard.effects.flatMap((effect, index) => (
+    effect.kind === "harvest_add_result" && Number(effect.item_id) > 0 && Number(effect.count) > 0
+      && Number.isFinite(Number(effect.count)) && Number.isFinite(Number(effect.chance)) && Number(effect.chance) >= 0
+      ? [{ kind: "add", key: `${receipt.receiptId}:shard:${shard.slotIndex}:${shard.itemId}:${index}`,
+        itemId: Number(effect.item_id), count: Number(effect.count), chance: Number(effect.chance), selectable: false }]
+      : []
+  )));
+  const results = [...receipt.results, ...perkEffects.filter((effect) => effect.kind === "add"), ...shardResults];
   const outputs = results.map((result, resultIndex) => {
     const key = result.key ?? `${receipt.key ?? receipt.receiptId}:${resultIndex}`;
     const selected = !result.selectable || selectedResultIds.has(key)
@@ -398,6 +473,9 @@ export function calculateHarvest(
 
   return {
     runs: safeRuns,
+    baseDurationSec,
+    durationSec,
+    shardDurationComplete: !selectedShards.length || durationSec !== null,
     ingredients: calculatedIngredients,
     outputs,
     selectedOutput: selectedOutputs[0] ?? null,
@@ -469,7 +547,7 @@ export function calculateRecipe(recipe, runs, prices, assumedPrices = new Map())
 
   const ingredients = recipe.ingredients.map((ingredient) => {
     const quantity = ingredient.quantity * safeRuns;
-    const expectedConsumed = quantity * (1 - ingredient.returnChance / 100);
+    const expectedConsumed = quantity * consumedFraction(ingredient);
     const marketUnitPrice = prices.get(ingredient.itemId)?.sell ?? null;
     const unitPrice = getEffectiveSellPrice(ingredient.itemId, prices, assumedPrices);
     const linePurchaseCost = unitPrice === null ? null : quantity * unitPrice;
@@ -569,7 +647,7 @@ export function calculateCraftChain(recipe, runs, prices, catalog, options = {},
     const marketPurchaseCost = marketUnitPrice === null ? null : quantity * marketUnitPrice;
     const children = targetRecipe.ingredients
       .map((ingredient) => {
-        const quantity = ingredient.quantity * craftRuns * (1 - ingredient.returnChance / 100);
+        const quantity = ingredient.quantity * craftRuns * consumedFraction(ingredient);
         if (quantity <= 0) return null;
         return expandItem(ingredient.itemId, quantity, path, depth + 1);
       })

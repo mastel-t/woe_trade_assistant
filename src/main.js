@@ -49,7 +49,7 @@ const elements = Object.fromEntries(
     "costFootnote", "purchaseTotal", "purchaseLabel", "ingredientsTitle", "ingredientsBody",
     "missingPriceNote", "coProducts", "directModeButton", "chainModeButton", "chainTree",
     "chainSteps", "chainTreeBody", "chainTreeTitle",
-    "craftModeButton", "harvestModeButton", "harvestOptions", "rewardPerkList",
+    "craftModeButton", "harvestModeButton", "harvestOptions", "rewardPerkList", "craftPerks", "consumptionLabel",
   ].map((id) => [id, document.getElementById(id)]),
 );
 
@@ -210,6 +210,7 @@ function recipeUnlockPerks() {
 }
 
 function enabledReceiptIds() {
+  if (state.calculatorMode !== "craft") return [];
   return recipeUnlockPerks()
     .filter((perk) => state.perkIds.has(Number(perk.id)))
     .flatMap((perk) => (perk.effects ?? [])
@@ -406,6 +407,43 @@ function populateHarvestOptions() {
     elements.harvestOptions.append(label);
   });
 
+  populateHarvestShards(receipt, selection);
+}
+
+function populateHarvestShards(receipt, selection) {
+  const available = receipt.shards ?? [];
+  selection.shards = Array.from({ length: receipt.shardSlots ?? 0 }, (_, index) => {
+    const itemId = Number(selection.shards?.[index]);
+    if (!available.some((shard) => shard.itemId === itemId)) return 0;
+    return itemId;
+  });
+  if (!selection.shards.length) return;
+  const heading = document.createElement("span");
+  heading.className = "field-label";
+  heading.textContent = "Shards";
+  elements.harvestOptions.append(heading);
+  selection.shards.forEach((itemId, slotIndex) => {
+    const label = document.createElement("label");
+    label.className = "harvest-option";
+    const title = document.createElement("span");
+    title.textContent = `Shard ${slotIndex + 1}`;
+    const select = document.createElement("select");
+    setOption(select, 0, "None");
+    available.forEach((shard) => {
+      const option = document.createElement("option");
+      option.value = String(shard.itemId);
+      option.textContent = `${itemName(shard.itemId)} · ${formatQuantity(shard.durationSec)} sec`;
+      select.append(option);
+    });
+    select.value = String(itemId);
+    select.addEventListener("change", () => {
+      selection.shards[slotIndex] = Number(select.value);
+      populateHarvestOptions();
+      renderCalculation();
+    });
+    label.append(title, select);
+    elements.harvestOptions.append(label);
+  });
 }
 
 function populateHarvestPerks(receipt) {
@@ -711,24 +749,27 @@ function makeIngredientRow(ingredient) {
   });
   assumedPriceCell.append(assumedInput);
 
-  const returnCell = document.createElement("td");
-  returnCell.textContent = state.calculatorMode === "harvest" || ingredient.returnChance
-    ? `${formatQuantity(ingredient.returnChance)}%` : "—";
+  const consumptionCell = document.createElement("td");
+  consumptionCell.textContent = state.calculatorMode === "harvest"
+    ? `${formatQuantity(ingredient.breakChance)}%`
+    : ingredient.returnChance ? `${formatQuantity(ingredient.returnChance)}%` : "—";
   const costCell = document.createElement("td");
   costCell.className = "line-cost";
   costCell.textContent = formatMoney(ingredient.expectedCost);
 
   if (ingredient.unitPrice === null) row.classList.add("has-missing-price");
-  row.append(itemCell, quantityCell, priceCell, assumedPriceCell, returnCell, costCell);
+  row.append(itemCell, quantityCell, priceCell, assumedPriceCell, consumptionCell, costCell);
   return row;
 }
 
 function renderIngredients(calculation) {
+  elements.consumptionLabel.textContent = state.calculatorMode === "harvest" ? "BROKEN" : "Return";
   const rows = state.costMode === "chain" && calculation.rawMaterials
     ? calculation.rawMaterials.map((material) => ({
         itemId: material.itemId,
         quantity: material.quantity,
         returnChance: 0,
+        breakChance: 100,
         marketUnitPrice: material.marketUnitPrice ?? material.unitPrice,
         unitPrice: material.unitPrice,
         expectedCost: material.cost,
@@ -837,6 +878,7 @@ function renderCalculation() {
       state.assumedPrices,
       state.items,
       state.rewardPerkIds,
+      state.harvestSelections.get(receipt.key)?.shards ?? [],
     );
     elements.runsInput.value = String(calculation.runs);
     const chainOutputItemId = calculation.outputs.find((output) => output.selected)?.itemId ?? receipt.results[0]?.itemId;
@@ -866,10 +908,12 @@ function renderCalculation() {
       ? {
           ...calculation,
           ...chainCalculation,
+          expectedCost: calculation.shardDurationComplete === false ? null : chainCalculation.expectedCost,
+          purchaseCost: calculation.shardDurationComplete === false ? null : chainCalculation.purchaseCost,
           expectedRevenue: calculation.expectedRevenue,
           coveredExpectedRevenue: calculation.coveredExpectedRevenue,
           revenueComplete: calculation.revenueComplete,
-          profit: chainCalculation.expectedCost === null || calculation.expectedRevenue === null
+          profit: calculation.shardDurationComplete === false || chainCalculation.expectedCost === null || calculation.expectedRevenue === null
             ? null
             : calculation.expectedRevenue - chainCalculation.expectedCost,
         }
@@ -907,6 +951,8 @@ function setCostMode(mode) {
 function setCalculatorMode(mode) {
   state.calculatorMode = mode === "harvest" ? "harvest" : "craft";
   const isHarvest = state.calculatorMode === "harvest";
+  elements.craftPerks.hidden = isHarvest;
+  elements.rewardPerkList.hidden = !isHarvest;
   elements.craftModeButton.checked = !isHarvest;
   elements.harvestModeButton.checked = isHarvest;
   elements.calculatorTitle.textContent = isHarvest ? "Harvest calculator" : "Crafting calculator";
@@ -933,7 +979,7 @@ function setCalculatorMode(mode) {
   elements.harvestOptions.hidden = !isHarvest;
   state.selectedHarvestResults = new Set();
   state.selectedHarvestCandidates = [];
-  populateItems(elements.itemSearch.value);
+  rebuildCatalog();
   renderCalculation();
 }
 
