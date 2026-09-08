@@ -64,16 +64,22 @@ function parseBundle(bundle) {
     && Number.isFinite(entry.quantity) && entry.quantity > 0);
 }
 
-function expandBundle(itemId, quantity, itemIndex, path = new Set()) {
+function expandBundle(itemId, quantity, itemIndex, path = new Set(), probability = 1) {
   const item = itemIndex?.get(Number(itemId));
   if (!item?.bundle || path.has(Number(itemId))) return [];
   const nextPath = new Set(path).add(Number(itemId));
-  return parseBundle(item.bundle).flatMap((child) => {
-    const childQuantity = quantity * child.quantity;
-    const nested = expandBundle(child.itemId, childQuantity, itemIndex, nextPath);
+  const entries = parseBundle(item.bundle);
+  const totalWeight = entries.reduce((sum, child) => sum + child.quantity, 0);
+  return entries.flatMap((child) => {
+    // Rollers choose one entry; ordinary bundles grant every listed quantity.
+    const weight = item.type === "roller" ? child.quantity / totalWeight : 1;
+    const childQuantity = quantity * (item.type === "roller" ? weight : child.quantity);
+    const childProbability = probability * weight;
+    const nested = expandBundle(child.itemId, childQuantity, itemIndex, nextPath, childProbability);
     return nested.length
       ? nested
-      : [{ itemId: child.itemId, quantity: childQuantity, parentItemId: Number(itemId) }];
+      : [{ itemId: child.itemId, quantity: childQuantity, probability: childProbability,
+        parentItemId: Number(itemId) }];
   });
 }
 
@@ -233,7 +239,7 @@ export function calculateHarvest(
     const candidateIndex = Number(selectedCandidates[slotIndex]);
     const candidate = slot.candidates[candidateIndex] ?? slot.candidates[0];
     if (!candidate) return;
-    lootmoreCoef *= candidate.lootmoreCoef ?? 1;
+    lootmoreCoef += (candidate.lootmoreCoef ?? 1) - 1;
     addIngredient(candidate.itemId, candidate.count * safeRuns, candidate.breakChance / 100);
     candidate.requirements.forEach((requirement) => {
       addIngredient(requirement.itemId, requirement.quantity * safeRuns);
@@ -289,13 +295,13 @@ export function calculateHarvest(
         min: child.quantity,
         max: child.quantity,
         expected: child.quantity,
-        chance: effectiveChance,
-        baseChance: result.chance,
+        chance: effectiveChance * child.probability,
+        baseChance: result.chance * child.probability,
         selectable: result.selectable,
         selected,
         marketUnitPrice: childMarketPrice,
         unitPrice: childPrice,
-        revenue: childPrice === null ? null : child.quantity * childPrice,
+        revenue: child.quantity === 0 ? 0 : childPrice === null ? null : child.quantity * childPrice,
       };
     });
     const revenue = children.length
