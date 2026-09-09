@@ -89,10 +89,10 @@ test("Harvest shards combine time, quantity and generic targeted break deltas", 
   assert.ok(Math.abs(result.outputs[1].expected - 3.6) < 1e-10);
   assert.equal(result.expectedRevenue, 96);
   const duplicates = calculate([900, 900]);
-  assert.equal(duplicates.durationSec, 60);
+  assert.equal(duplicates.durationSec, 80);
   const duplicateMaterial = (id) => duplicates.ingredients.find((entry) => entry.itemId === id);
   assert.equal(duplicates.ingredients.filter((entry) => entry.itemId === 900).length, 1);
-  assert.equal(duplicateMaterial(900).quantity, 2);
+  assert.ok(Math.abs(duplicateMaterial(900).quantity - 8 / 3) < 1e-10);
   assert.equal(duplicateMaterial(900).baseQuantity, 20);
   assert.equal(duplicateMaterial(900).returnChance, 0);
   assert.ok(Math.abs(duplicateMaterial(1).returnChance - (100 - 10.02 * 1.9)) < 1e-10);
@@ -106,7 +106,7 @@ test("Harvest shards combine time, quantity and generic targeted break deltas", 
   }
   assert.equal(new Set(duplicates.outputs.map((output) => output.key)).size, 3);
   assert.ok(Math.abs(duplicates.expectedRevenue - 176) < 1e-10);
-  assert.ok(Math.abs(duplicates.expectedCost - (40 + 20 + 2 * 10.02 / 100 * 1.9 * 10
+  assert.ok(Math.abs(duplicates.expectedCost - (40 + 80 / 3 + 2 * 10.02 / 100 * 1.9 * 10
     + 2 * 0.02 / 100 * 10)) < 1e-10);
   assert.deepEqual(calculate([900, 900, 900]), duplicates);
   assert.equal(calculate([0, 900]).outputs[1].key, duplicates.outputs[2].key);
@@ -127,6 +127,46 @@ test("Harvest shards combine time, quantity and generic targeted break deltas", 
   assert.equal(extractHarvestCatalog(config)[0].shards.length, 0);
   config.harvests[0].shards.tag_match = "any";
   assert.equal(extractHarvestCatalog(config)[0].shards.length, 1);
+});
+
+test("Harvest shards with zero or negative combined speed leave duration and costs incomplete", () => {
+  for (const multiplier of [0.5, 0.4]) {
+    const [receipt] = extractHarvestCatalog({ harvests: [{ receipt_id: 1, duration_sec: 600,
+      shards: { slots: 2, allowed_tags: ["speed"], tag_match: "any" },
+      items_slots: [], result: [{ item_id: 2, count: 1, chance_percent: 100 }],
+    }], shards: [{ item_id: 900, duration_sec: 120, tags: ["speed"], effects: [
+      { scope: "harvest", effect: { kind: "harvest_speed_mult", multiplier } },
+    ] }] });
+    const result = calculateHarvest(receipt, 1, new Map([[900, { sell: 10 }], [2, { buy: 10 }]]),
+      [], new Set(), new Map(), new Map(), new Set(), [900, 900]);
+    assert.equal(result.durationSec, null);
+    assert.equal(result.shardDurationComplete, false);
+    assert.equal(result.costComplete, false);
+    assert.equal(result.expectedCost, null);
+    assert.equal(result.profit, null);
+    assert.equal(result.ingredients.length, 0);
+  }
+});
+
+test("Receipt 6 toxic mushroom duration and quantity match Scholar and Scholar2 with Early Egg", () => {
+  const receipt = extractHarvestCatalog(sampleConfig).find((entry) => entry.receiptId === 6);
+  for (const [scholarId, expectedDuration] of [[9, 384.6153846153846], [42, 263.1578947368421]]) {
+    const candidates = receipt.slots.map((slot) => slot.candidates
+      .findIndex((candidate) => [scholarId, 22].includes(candidate.itemId)));
+    assert.ok(candidates.every((index) => index >= 0));
+    for (const runs of [1, 3]) {
+      const result = calculateHarvest(receipt, runs, new Map([[129, { sell: 10 }]]), candidates,
+        new Set(), new Map(), new Map(), new Set(), [129, 129]);
+      assert.ok(Math.abs(result.durationSec - expectedDuration) < 1e-10);
+      assert.equal(result.shardDurationComplete, true);
+      const materials = result.ingredients.filter((entry) => entry.itemId === 129);
+      assert.equal(materials.length, 1);
+      const expectedQuantity = 2 * expectedDuration / 900 * runs;
+      assert.ok(Math.abs(materials[0].quantity - expectedQuantity) < 1e-10);
+      assert.ok(Math.abs(materials[0].expectedConsumed - expectedQuantity) < 1e-10);
+      assert.ok(Math.abs(materials[0].expectedCost - expectedQuantity * 10) < 1e-10);
+    }
+  }
 });
 
 test("Receipt 6 with two toxic mushroom shards has 190.04 percent displayed damage", () => {
