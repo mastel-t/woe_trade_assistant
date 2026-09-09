@@ -226,12 +226,18 @@ function harvestShards(config, receipt) {
   }));
 }
 
+function harvestParallelCount(value) {
+  const count = Number(value);
+  return Number.isInteger(count) && count > 0 ? count : 1;
+}
+
 export function extractHarvestCatalog(config = {}) {
   return (config.harvests ?? [])
     .filter((receipt) => !receipt?.disabled && Number.isFinite(Number(receipt?.receipt_id)))
     .map((receipt) => ({
       key: String(receipt.receipt_id),
       receiptId: Number(receipt.receipt_id),
+      maxParallel: harvestParallelCount(receipt.max_parallel),
       receipt,
       rewardPerks: harvestRewardPerks(config, receipt),
       shardSlots: Math.max(0, Math.trunc(asFiniteNumber(receipt.shards?.slots))),
@@ -300,6 +306,8 @@ export function calculateHarvest(
   selectedShardIds = [],
 ) {
   const safeRuns = clamp(Math.trunc(asFiniteNumber(runs, 1)), 1, 1_000_000);
+  const maxParallel = harvestParallelCount(receipt.maxParallel);
+  const batchCount = Math.ceil(safeRuns / maxParallel);
   const getMarketBuyPrice = (itemId) => prices.get(Number(itemId))?.buy ?? null;
   const ingredients = [];
   const addIngredient = (itemId, quantity, consumedFraction = 1, baseQuantity = quantity,
@@ -354,8 +362,8 @@ export function calculateHarvest(
   const durationSec = baseDurationSec > 0 && effectiveSpeed > 0
     && Number.isFinite(effectiveSpeed) ? baseDurationSec / effectiveSpeed : null;
   selectedShards.forEach((shard) => {
-    if (durationSec !== null) addIngredient(shard.itemId, durationSec / shard.durationSec * safeRuns,
-      1, baseDurationSec / shard.durationSec * safeRuns, 1);
+    if (durationSec !== null) addIngredient(shard.itemId, durationSec / shard.durationSec / maxParallel * batchCount,
+      1, baseDurationSec / shard.durationSec / maxParallel * batchCount, 1);
   });
   const rewardMultiplier = Math.max(0, shardEffects
     .filter((effect) => effect.kind === "harvest_result_mult")

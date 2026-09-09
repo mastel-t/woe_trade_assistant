@@ -150,18 +150,23 @@ test("Harvest shards with zero or negative combined speed leave duration and cos
 
 test("Receipt 6 toxic mushroom duration and quantity match Scholar and Scholar2 with Early Egg", () => {
   const receipt = extractHarvestCatalog(sampleConfig).find((entry) => entry.receiptId === 6);
-  for (const [scholarId, expectedDuration] of [[9, 384.6153846153846], [42, 263.1578947368421]]) {
+  for (const [scholarId, expectedDuration, defaultQuantity] of [
+    [9, 384.6153846153846, 0.07122507122507122],
+    [42, 263.1578947368421, 0.048732943469785575],
+  ]) {
     const candidates = receipt.slots.map((slot) => slot.candidates
       .findIndex((candidate) => [scholarId, 22].includes(candidate.itemId)));
     assert.ok(candidates.every((index) => index >= 0));
-    for (const runs of [1, 3]) {
+    assert.equal(receipt.maxParallel, 12);
+    for (const [runs, batches] of [[1, 1], [11, 1], [12, 1], [13, 2], [23, 2], [24, 2], [25, 3]]) {
       const result = calculateHarvest(receipt, runs, new Map([[129, { sell: 10 }]]), candidates,
         new Set(), new Map(), new Map(), new Set(), [129, 129]);
       assert.ok(Math.abs(result.durationSec - expectedDuration) < 1e-10);
       assert.equal(result.shardDurationComplete, true);
       const materials = result.ingredients.filter((entry) => entry.itemId === 129);
       assert.equal(materials.length, 1);
-      const expectedQuantity = 2 * expectedDuration / 900 * runs;
+      const expectedQuantity = defaultQuantity * batches;
+      assert.ok(Math.abs(materials[0].baseQuantity - 2 * receipt.receipt.duration_sec / 900 / 12 * batches) < 1e-10);
       assert.ok(Math.abs(materials[0].quantity - expectedQuantity) < 1e-10);
       assert.ok(Math.abs(materials[0].expectedConsumed - expectedQuantity) < 1e-10);
       assert.ok(Math.abs(materials[0].expectedCost - expectedQuantity * 10) < 1e-10);
@@ -186,6 +191,48 @@ test("Receipt 6 with two toxic mushroom shards has 190.04 percent displayed dama
   });
 });
 
+test("Harvest parallel counts normalize invalid data and amortize only shards", () => {
+  for (const [raw, expected, expectedShardQuantity] of [
+    [undefined, 1, 60], [null, 1, 60], [0, 1, 60], [-2, 1, 60], [1.5, 1, 60],
+    ["invalid", 1, 60], [Infinity, 1, 60], ["12", 12, 5 / 12], [12, 12, 5 / 12], [5, 5, 3],
+  ]) {
+    const config = { harvests: [{ receipt_id: 1, max_parallel: raw, duration_sec: 600,
+      shards: { slots: 1, allowed_tags: ["test"], tag_match: "any" },
+      items_slots: [{ available_items: [{ item_id: 1, count: 2, break_percent: 50 }] }],
+      result: [{ item_id: 2, count: 3, chance_percent: 100 }],
+    }], shards: [{ item_id: 900, duration_sec: 120, tags: ["test"], effects: [] }] };
+    const [receipt] = extractHarvestCatalog(config);
+    assert.equal(receipt.maxParallel, expected);
+    assert.deepEqual(receipt.shards.map((shard) => shard.itemId), [900]);
+    const prices = new Map([[1, { sell: 5 }], [2, { buy: 10 }], [900, { sell: 10 }]]);
+    const calculate = (entry, runs) => calculateHarvest(entry, runs, prices, [], new Set(),
+      new Map(), new Map(), new Set(), [900]);
+    const result = calculate(receipt, 12);
+    const serial = calculate({ ...receipt, maxParallel: 1 }, 12);
+    assert.equal(result.durationSec, serial.durationSec);
+    assert.deepEqual(result.outputs, serial.outputs);
+    assert.deepEqual(result.ingredients.filter((entry) => entry.itemId !== 900),
+      serial.ingredients.filter((entry) => entry.itemId !== 900));
+    const equipment = result.ingredients.find((entry) => entry.itemId === 1);
+    assert.equal(equipment.quantity, 24);
+    assert.equal(equipment.expectedConsumed, 12);
+    assert.ok(Math.abs(result.expectedCost - (60 + expectedShardQuantity * 10)) < 1e-10);
+    const shard = result.ingredients.find((entry) => entry.itemId === 900);
+    assert.ok(Math.abs(shard.quantity - expectedShardQuantity) < 1e-10);
+    assert.ok(Math.abs(shard.baseQuantity - expectedShardQuantity) < 1e-10);
+    assert.ok(Math.abs(shard.expectedCost - expectedShardQuantity * 10) < 1e-10);
+    assert.ok(Math.abs(calculate({ ...receipt, maxParallel: raw }, 12).ingredients
+      .find((entry) => entry.itemId === 900).quantity - expectedShardQuantity) < 1e-10);
+    if (raw === 12) {
+      const output = { itemId: 2, expected: 36, min: 36, max: 36 };
+      const chain = calculateCraftChain({ outputItemId: 2, ingredients: result.ingredients,
+        outputs: [output], selectedOutput: output }, 1, prices, new Map());
+      assert.equal(chain.expectedCost, result.expectedCost);
+      assert.ok(Math.abs(chain.expectedCost - 64.16666666666667) < 1e-10);
+    }
+  }
+});
+
 test("Harvest sample shards respect tool targets, fixed deltas and fractional consumption", () => {
   const receipt = extractHarvestCatalog(sampleConfig).find((entry) => entry.receiptId === 23);
   const calculate = (ids) => calculateHarvest(receipt, 1, new Map(), [2, 2, 1],
@@ -195,7 +242,7 @@ test("Harvest sample shards respect tool targets, fixed deltas and fractional co
   assert.ok(toxic.ingredients.some((entry) => entry.itemId === 129));
   assert.ok(Math.abs(toxic.durationSec - base.durationSec / 0.8) < 1e-10);
   assert.ok(Math.abs(toxic.ingredients.find((entry) => entry.itemId === 129).quantity
-    - toxic.durationSec / 900) < 1e-10);
+    - toxic.durationSec / 900 / 10) < 1e-10);
   assert.ok(Math.abs(toxic.ingredients.find((entry) => entry.itemId === 162).returnChance
     - 99.9855) < 1e-10);
   assert.equal(toxic.outputs[1].quantity, base.outputs[1].quantity * 2);

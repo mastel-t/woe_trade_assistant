@@ -5,6 +5,44 @@ import test from "node:test";
 const mainSource = await readFile(new URL("../src/main.js", import.meta.url), "utf8");
 const htmlSource = await readFile(new URL("../index.html", import.meta.url), "utf8");
 
+test("Harvest defaults Runs on entry and receipt changes while retaining manual values and Crafts", () => {
+  const optionsSource = mainSource.match(/function populateHarvestOptions\(\) \{[^]*?\n\}/)[0];
+  const modeSource = mainSource.match(/function setCalculatorMode\(mode\) \{[^]*?\n\}/)[0];
+  const state = { calculatorMode: "craft", activeHarvestReceiptKey: null, craftRuns: "1",
+    harvestSelections: new Map() };
+  const makeElement = () => ({ value: "", replaceChildren() {}, append() {}, setAttribute() {},
+    closest() { return this; }, querySelector() { return this; } });
+  const elements = new Proxy({}, { get(target, key) { return target[key] ??= makeElement(); } });
+  elements.runsInput.value = "7";
+  // The Craft item and Harvest receipt deliberately share the same numeric key.
+  elements.itemSelect.value = "6";
+  let receipt = { key: "6", maxParallel: 12, slots: [], results: [] };
+  const document = { createElement: makeElement };
+  const api = new Function("state", "elements", "document", "selectedHarvest", "populateHarvestShards",
+    "renderCalculation", `${optionsSource}; ${modeSource};
+      function rebuildCatalog() { if (state.calculatorMode === "harvest") populateHarvestOptions(); }
+      return { populateHarvestOptions, setCalculatorMode };`)(state, elements, document,
+    () => receipt, () => {}, () => {});
+  api.setCalculatorMode("harvest");
+  assert.equal(elements.runsInput.value, "12");
+  elements.runsInput.value = "24";
+  api.populateHarvestOptions(); // Same-receipt market/search redraw.
+  assert.equal(elements.runsInput.value, "24");
+  api.setCalculatorMode("harvest");
+  assert.equal(elements.runsInput.value, "24");
+  receipt = { ...receipt, key: "23", maxParallel: 10 };
+  api.populateHarvestOptions();
+  assert.equal(elements.runsInput.value, "10");
+  elements.runsInput.value = "20";
+  api.setCalculatorMode("craft");
+  assert.equal(elements.runsInput.value, "7");
+  elements.runsInput.value = "9";
+  api.setCalculatorMode("harvest");
+  assert.equal(elements.runsInput.value, "10");
+  api.setCalculatorMode("craft");
+  assert.equal(elements.runsInput.value, "9");
+});
+
 test("Craft unlock perks apply only in Craft while mode switching selects the visible perk group", () => {
   const source = mainSource.match(/function enabledReceiptIds\(\) \{[^]*?\n\}/)[0];
   const state = { calculatorMode: "craft", perkIds: new Set([1]) };

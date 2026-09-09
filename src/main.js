@@ -31,6 +31,8 @@ const state = {
   selectedHarvestCandidates: [],
   selectedHarvestResults: new Set(),
   harvestSelections: new Map(),
+  activeHarvestReceiptKey: null,
+  craftRuns: "1",
 };
 
 const elements = Object.fromEntries(
@@ -363,6 +365,10 @@ function populateHarvestOptions() {
   elements.harvestOptions.replaceChildren();
   elements.harvestOptions.hidden = !receipt;
   if (!receipt) return;
+  if (state.activeHarvestReceiptKey !== receipt.key) {
+    elements.runsInput.value = String(receipt.maxParallel);
+    state.activeHarvestReceiptKey = receipt.key;
+  }
   let selection = state.harvestSelections.get(receipt.key);
   if (!selection) {
     selection = {
@@ -949,6 +955,12 @@ function setCostMode(mode) {
 }
 
 function setCalculatorMode(mode) {
+  const nextMode = mode === "harvest" ? "harvest" : "craft";
+  if (nextMode !== state.calculatorMode) {
+    if (state.calculatorMode === "craft") state.craftRuns = elements.runsInput.value;
+    else elements.runsInput.value = state.craftRuns;
+    state.activeHarvestReceiptKey = null;
+  }
   state.calculatorMode = mode === "harvest" ? "harvest" : "craft";
   const isHarvest = state.calculatorMode === "harvest";
   elements.craftPerks.hidden = isHarvest;
