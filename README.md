@@ -36,6 +36,11 @@ but its intermediate item is available on the marketplace, the calculator
 uses its marketplace price as a fallback.
 
 In Harvest mode, choose the characters and equipment for the selected receipt.
+Runs defaults to the receipt's maximum parallel count when entering Harvest or
+changing receipts. You can adjust it manually. Shard consumption per selected slot
+is `(harvest duration / shard duration / max_parallel) × ceil(Runs / max_parallel)`.
+Cost uses this quantity. With a maximum parallel count of 12, Runs 1–12 use the same
+Shard quantity, Runs 13–24 use twice that quantity, and Runs 25–36 use three times.
 Choose **Shards** in the same section, or select **None** to remove one.
 The available choices and slots depend on the receipt. The same shard can be
 selected in multiple slots. Selected shards appear
