@@ -323,8 +323,9 @@ export function calculateHarvest(
     })
     .filter((shard) => shard && Number.isFinite(shard.durationSec) && shard.durationSec > 0);
   const shardEffects = selectedShards.flatMap((shard) => shard.effects);
-  const multiplierFor = (kind, effects = shardEffects) => effects.filter((effect) => effect.kind === kind)
-    .reduce((product, effect) => product * Math.max(0, asFiniteNumber(effect.multiplier, 1)), 1);
+  const shardSpeedMultiplier = Math.max(0, shardEffects
+    .filter((effect) => effect.kind === "harvest_speed_mult")
+    .reduce((sum, effect) => sum + Math.max(0, asFiniteNumber(effect.multiplier, 1)) - 1, 1));
   let lootmoreCoef = 1;
   let speedCoef = 1;
   receipt.slots.forEach((slot, slotIndex) => {
@@ -349,7 +350,7 @@ export function calculateHarvest(
     });
   });
   const baseDurationSec = Math.max(0, asFiniteNumber(receipt.receipt?.duration_sec));
-  const effectiveSpeed = speedCoef * multiplierFor("harvest_speed_mult");
+  const effectiveSpeed = speedCoef * shardSpeedMultiplier;
   const durationSec = baseDurationSec > 0 && effectiveSpeed > 0
     && Number.isFinite(effectiveSpeed) ? baseDurationSec / effectiveSpeed : null;
   selectedShards.forEach((shard) => {
