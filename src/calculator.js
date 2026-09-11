@@ -368,7 +368,7 @@ export function calculateHarvest(
   const rewardMultiplier = Math.max(0, shardEffects
     .filter((effect) => effect.kind === "harvest_result_mult")
     .reduce((sum, effect) => sum + Math.max(0, asFiniteNumber(effect.multiplier, 1)) - 1, 1));
-  lootmoreCoef = Math.max(0, lootmoreCoef) * rewardMultiplier;
+  lootmoreCoef = Math.max(0, lootmoreCoef);
 
   let expectedCost = 0;
   let purchaseCost = 0;
@@ -405,7 +405,7 @@ export function calculateHarvest(
   const shardResults = selectedShards.flatMap((shard) => shard.effects.flatMap((effect, index) => (
     effect.kind === "harvest_add_result" && Number(effect.item_id) > 0 && Number(effect.count) > 0
       && Number.isFinite(Number(effect.count)) && Number.isFinite(Number(effect.chance)) && Number(effect.chance) >= 0
-      ? [{ kind: "add", key: `${receipt.receiptId}:shard:${shard.slotIndex}:${shard.itemId}:${index}`,
+      ? [{ kind: "add", source: "shard", key: `${receipt.receiptId}:shard:${shard.slotIndex}:${shard.itemId}:${index}`,
         itemId: Number(effect.item_id), count: Number(effect.count), chance: Number(effect.chance), selectable: false }]
       : []
   )));
@@ -421,14 +421,16 @@ export function calculateHarvest(
       .filter((effect) => result.kind !== "add" && effect.kind !== "add" && effect.itemId === result.itemId)
       .reduce((multiplier, effect) => multiplier * effect.multiplier, 1);
     const effectiveChance = clamp(sharedChance * perkMultiplier, 0, 100);
-    const quantity = result.count * Math.max(0, lootmoreCoef);
+    // Shard-added rewards receive neither character nor shard quantity bonuses.
+    const quantityMultiplier = result.source === "shard" ? 1 : lootmoreCoef * rewardMultiplier;
+    const quantity = result.count * quantityMultiplier;
     const expected = selected ? effectiveChance / 100 * quantity * safeRuns : 0;
     const marketUnitPrice = getMarketBuyPrice(result.itemId);
     const unitPrice = getEffectiveBuyPrice(result.itemId, prices, assumedPrices);
     const children = expandBundle(result.itemId, result.count, itemIndex).map((child, childIndex) => {
       const childMarketPrice = getMarketBuyPrice(child.itemId);
       const childPrice = getEffectiveBuyPrice(child.itemId, prices, assumedPrices);
-      const childExpected = effectiveChance / 100 * child.quantity * Math.max(0, lootmoreCoef) * safeRuns;
+      const childExpected = effectiveChance / 100 * child.quantity * quantityMultiplier * safeRuns;
       const baseQuantity = child.probability > 0 ? child.quantity / child.probability : 0;
       return {
         type: "bundle-child",
@@ -438,7 +440,7 @@ export function calculateHarvest(
         min: childExpected,
         max: childExpected,
         baseQuantity,
-        quantity: baseQuantity * Math.max(0, lootmoreCoef),
+        quantity: baseQuantity * quantityMultiplier,
         expected: childExpected,
         chance: effectiveChance * child.probability,
         baseChance: result.chance * child.probability,

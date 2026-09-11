@@ -85,9 +85,9 @@ test("Harvest shards combine time, quantity and generic targeted break deltas", 
   assert.equal(result.outputs[0].quantity, 6);
   assert.equal(result.outputs[0].chance, 50);
   assert.equal(result.outputs[0].expected, 6);
-  assert.equal(result.outputs[1].quantity, 9);
-  assert.ok(Math.abs(result.outputs[1].expected - 3.6) < 1e-10);
-  assert.equal(result.expectedRevenue, 96);
+  assert.equal(result.outputs[1].quantity, 3);
+  assert.ok(Math.abs(result.outputs[1].expected - 1.2) < 1e-10);
+  assert.equal(result.expectedRevenue, 72);
   const duplicates = calculate([900, 900]);
   assert.equal(duplicates.durationSec, 80);
   const duplicateMaterial = (id) => duplicates.ingredients.find((entry) => entry.itemId === id);
@@ -101,11 +101,11 @@ test("Harvest shards combine time, quantity and generic targeted break deltas", 
   assert.equal(duplicates.outputs[0].expected, 8);
   assert.equal(duplicates.outputs.length, 3);
   for (const output of duplicates.outputs.slice(1)) {
-    assert.equal(output.quantity, 12);
-    assert.ok(Math.abs(output.expected - 4.8) < 1e-10);
+    assert.equal(output.quantity, 3);
+    assert.ok(Math.abs(output.expected - 1.2) < 1e-10);
   }
   assert.equal(new Set(duplicates.outputs.map((output) => output.key)).size, 3);
-  assert.ok(Math.abs(duplicates.expectedRevenue - 176) < 1e-10);
+  assert.ok(Math.abs(duplicates.expectedRevenue - 104) < 1e-10);
   assert.ok(Math.abs(duplicates.expectedCost - (40 + 80 / 3 + 2 * 10.02 / 100 * 1.9 * 10
     + 2 * 0.02 / 100 * 10)) < 1e-10);
   assert.deepEqual(calculate([900, 900, 900]), duplicates);
@@ -127,6 +127,103 @@ test("Harvest shards combine time, quantity and generic targeted break deltas", 
   assert.equal(extractHarvestCatalog(config)[0].shards.length, 0);
   config.harvests[0].shards.tag_match = "any";
   assert.equal(extractHarvestCatalog(config)[0].shards.length, 1);
+});
+
+test("Shard quantity bonuses distinguish normal, perk and shard rewards of the same item", () => {
+  for (const multiplier of [2, 0]) {
+    const [receipt] = extractHarvestCatalog({ harvests: [{ receipt_id: 1, duration_sec: 100,
+      shards: { slots: 1, allowed_tags: ["test"], tag_match: "any" },
+      items_slots: [{ available_items: [{ item_id: 1, lootmore_coef: 2 }] }],
+      result: [{ item_id: 2, count: 3, chance_percent: 50 }],
+    }], shards: [{ item_id: 900, duration_sec: 100, tags: ["test"], effects: [
+      { scope: "harvest", effect: { kind: "harvest_result_mult", multiplier } },
+      { scope: "harvest", effect: { kind: "harvest_add_result", item_id: 2, count: 3, chance: 50 } },
+    ] }] });
+    receipt.rewardPerks = [{ id: 1, effects: [
+      { kind: "add", key: "1:perk:1:0", itemId: 2, count: 3, chance: 50, selectable: false },
+    ] }];
+    const prices = new Map([[2, { buy: 10 }], [900, { sell: 0 }]]);
+    const result = calculateHarvest(receipt, 2, prices, [], new Set(), new Map(), new Map(),
+      new Set([1]), [900]);
+    assert.deepEqual(result.outputs.map((output) => output.quantity), [6 * multiplier, 6 * multiplier, 3]);
+    assert.deepEqual(result.outputs.map((output) => output.expected), [6 * multiplier, 6 * multiplier, 3]);
+    assert.equal(result.expectedRevenue, 120 * multiplier + 30);
+    assert.equal(result.profit, result.expectedRevenue);
+  }
+});
+
+test("Receipt 17 Toxic Mushroom boosts normal rewards but not Lucard Diary or its Knowledge children", () => {
+  const receipt = extractHarvestCatalog(sampleConfig).find((entry) => entry.receiptId === 17);
+  const candidates = receipt.slots.map((slot) => slot.candidates.findIndex((candidate) => candidate.itemId === 75));
+  assert.ok(candidates.every((index) => index >= 0));
+  const itemIndex = createItemIndex(sampleConfig.items);
+  const prices = new Map(sampleConfig.items.map((item) => [Number(item.type_id), { buy: 10, sell: 0 }]));
+  const calculate = (shards) => calculateHarvest(receipt, 8, prices, candidates, new Set(["17:2"]),
+    new Map(), itemIndex, new Set(), shards);
+  const diary = calculate([71]);
+  const boosted = calculate([71, 129]);
+  for (let index = 0; index < receipt.results.length; index += 1) {
+    assert.equal(boosted.outputs[index].quantity, diary.outputs[index].quantity * 2);
+    assert.equal(boosted.outputs[index].expected, diary.outputs[index].expected * 2);
+  }
+  const additions = diary.outputs.slice(receipt.results.length);
+  assert.equal(additions.length, 4);
+  assert.ok(additions.every((output) => output.quantity === 1));
+  assert.deepEqual(boosted.outputs.slice(receipt.results.length), additions);
+  const knowledge = additions.find((output) => output.itemId === 5000);
+  assert.ok(knowledge.children.length > 0);
+  assert.equal(knowledge.revenue, knowledge.children.reduce((sum, child) => sum + child.revenue, 0));
+  const normalRevenue = diary.outputs.slice(0, receipt.results.length).reduce((sum, output) => sum + output.revenue, 0);
+  assert.ok(Math.abs(boosted.expectedRevenue - diary.expectedRevenue - normalRevenue) < 1e-10);
+  const duplicates = calculate([71, 71, 129]);
+  assert.equal(duplicates.outputs.length, receipt.results.length + 2 * additions.length);
+  for (const output of duplicates.outputs.slice(receipt.results.length)) {
+    const original = additions.find((entry) => entry.itemId === output.itemId);
+    assert.equal(output.quantity, original.quantity);
+    assert.equal(output.expected, original.expected);
+    assert.equal(output.revenue, original.revenue);
+    assert.deepEqual(output.children.map(({ quantity, expected, revenue }) => ({ quantity, expected, revenue })),
+      original.children.map(({ quantity, expected, revenue }) => ({ quantity, expected, revenue })));
+  }
+  assert.equal(new Set(duplicates.outputs.map((output) => output.key)).size, duplicates.outputs.length);
+});
+
+test("Diary rewards ignore worker and assistant quantity bonuses while retaining harvest speed benefits", () => {
+  const receipt = extractHarvestCatalog(sampleConfig).find((entry) => entry.receiptId === 17);
+  const candidates = receipt.slots.map((slot) => slot.candidates.findIndex((candidate) => candidate.itemId === 75));
+  assert.ok(candidates.every((index) => index >= 0));
+  const itemIndex = createItemIndex(sampleConfig.items);
+  const prices = new Map(sampleConfig.items.map((item) => [Number(item.type_id), { buy: 10, sell: 0 }]));
+  prices.set(71, { buy: 10, sell: 100 });
+  const calculate = (entry) => calculateHarvest(entry, 8, prices, candidates, new Set(["17:2"]),
+    new Map(), itemIndex, new Set(), [71]);
+  const base = calculate(receipt);
+  const additions = base.outputs.slice(receipt.results.length);
+  assert.ok(additions.find((output) => output.itemId === 5000).children.length > 0);
+  for (const slotIndex of [0, 1]) {
+    for (const lootmoreCoef of [0, 4]) {
+      const changed = structuredClone(receipt);
+      changed.slots[slotIndex].candidates[candidates[slotIndex]].lootmoreCoef = lootmoreCoef;
+      const result = calculate(changed);
+      assert.deepEqual(result.outputs.slice(receipt.results.length), additions);
+      assert.notEqual(result.outputs[0].quantity, base.outputs[0].quantity);
+      assert.equal(result.durationSec, base.durationSec);
+    }
+    const fasterReceipt = structuredClone(receipt);
+    fasterReceipt.slots[slotIndex].candidates[candidates[slotIndex]].speedCoef += 1;
+    const faster = calculate(fasterReceipt);
+    assert.deepEqual(faster.outputs, base.outputs);
+    assert.ok(faster.durationSec > 0 && faster.durationSec < base.durationSec);
+    const baseKnowledge = additions.find((output) => output.itemId === 5000);
+    const fasterKnowledge = faster.outputs.find((output) => output.itemId === 5000);
+    assert.ok(fasterKnowledge.expected * 3600 / faster.durationSec
+      > baseKnowledge.expected * 3600 / base.durationSec);
+    const baseShard = base.ingredients.find((ingredient) => ingredient.itemId === 71);
+    const fasterShard = faster.ingredients.find((ingredient) => ingredient.itemId === 71);
+    assert.ok(fasterShard.expectedCost > 0 && fasterShard.expectedCost < baseShard.expectedCost);
+    assert.ok(Math.abs(fasterShard.expectedCost / baseShard.expectedCost
+      - faster.durationSec / base.durationSec) < 1e-10);
+  }
 });
 
 test("Harvest shards with zero or negative combined speed leave duration and costs incomplete", () => {
